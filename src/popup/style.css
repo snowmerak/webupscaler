@@ -1,0 +1,128 @@
+:root {
+  color: #20202a;
+  background: #f7f6fb;
+  font-family:
+    Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 360px;
+  margin: 0;
+}
+
+.popup {
+  padding: 24px;
+}
+
+.hero {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+.logo {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  color: white;
+  background: linear-gradient(145deg, #836fff, #5546e8);
+  box-shadow: 0 8px 22px rgb(89 70 232 / 24%);
+  font-weight: 800;
+}
+
+.eyebrow {
+  margin: 0 0 3px;
+  color: #817d91;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.03em;
+}
+
+.status-card {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #ebe9f2;
+  border-radius: 16px;
+  background: white;
+  box-shadow: 0 8px 28px rgb(40 36 66 / 6%);
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #45b985;
+  box-shadow: 0 0 0 4px rgb(69 185 133 / 12%);
+}
+
+.status-card strong {
+  font-size: 13px;
+}
+
+.status-card p {
+  margin: 4px 0 0;
+  color: #757181;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 14px;
+  color: white;
+  background: #20202a;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  transition: transform 150ms ease, background 150ms ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #34333e;
+}
+
+button.active {
+  background: #6555ec;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.arrow {
+  font-size: 18px;
+}
+
+.hint {
+  margin: 12px 0 0;
+  color: #9995a4;
+  font-size: 11px;
+  text-align: center;
+}
+

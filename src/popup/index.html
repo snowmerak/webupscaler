@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Web Upscaler</title>
+  </head>
+  <body>
+    <main class="popup">
+      <header class="hero">
+        <span class="logo" aria-hidden="true">W</span>
+        <div>
+          <p class="eyebrow">CHROME EXTENSION</p>
+          <h1>Web Upscaler</h1>
+        </div>
+      </header>
+
+      <section class="status-card" aria-live="polite">
+        <span class="status-dot"></span>
+        <div>
+          <strong>확장 프로그램 준비 완료</strong>
+          <p id="status">현재 페이지의 이미지를 감지할 수 있습니다.</p>
+        </div>
+      </section>
+
+      <button id="toggle" type="button">
+        <span>페이지 이미지 표시</span>
+        <span class="arrow" aria-hidden="true">→</span>
+      </button>
+
+      <p class="hint">일반 웹 페이지에서 테스트해 보세요.</p>
+    </main>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
+
