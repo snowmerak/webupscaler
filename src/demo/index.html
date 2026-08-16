@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Web Upscaler GPU Demo</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p>DEVELOPMENT HARNESS</p>
+          <h1>WebGPU spatial pipeline</h1>
+        </div>
+        <span id="status">초기화 중</span>
+      </header>
+
+      <section class="comparison">
+        <article>
+          <div class="label"><strong>Source</strong><span>480×270</span></div>
+          <canvas id="source" width="480" height="270"></canvas>
+        </article>
+        <article>
+          <div class="label"><strong>Upscaled</strong><span>960×540</span></div>
+          <canvas id="output"></canvas>
+        </article>
+      </section>
+
+      <footer>
+        <button id="toggle" type="button">애니메이션 멈추기</button>
+        <span id="metrics">프레임을 기다리는 중입니다.</span>
+      </footer>
+      <video id="video" muted playsinline aria-hidden="true"></video>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
+

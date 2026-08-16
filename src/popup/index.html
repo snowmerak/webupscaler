@@ -3,32 +3,84 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Web Upscaler</title>
+    <title>Web Upscaler v2</title>
   </head>
   <body>
     <main class="popup">
       <header class="hero">
-        <span class="logo" aria-hidden="true">W</span>
-        <div>
-          <p class="eyebrow">CHROME EXTENSION</p>
-          <h1>Web Upscaler</h1>
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="presentation">
+            <path d="M5 6.5 8.1 18l3.9-8 3.9 8L19 6.5" />
+          </svg>
+        </span>
+        <div class="title-group">
+          <p class="eyebrow">SOOP · WEBGPU</p>
+          <h1>Web Upscaler <span>v2</span></h1>
         </div>
+        <span id="state-badge" class="state-badge">꺼짐</span>
       </header>
 
       <section class="status-card" aria-live="polite">
-        <span class="status-dot"></span>
+        <span id="status-dot" class="status-dot"></span>
         <div>
-          <strong>확장 프로그램 준비 완료</strong>
-          <p id="status">현재 페이지의 이미지를 감지할 수 있습니다.</p>
+          <strong id="status-title">상태 확인 중</strong>
+          <p id="status-message">SOOP 플레이어와 연결하고 있습니다.</p>
         </div>
       </section>
 
-      <button id="toggle" type="button">
-        <span>페이지 이미지 표시</span>
-        <span class="arrow" aria-hidden="true">→</span>
-      </button>
+      <section class="control-card">
+        <label class="toggle-row" for="enabled">
+          <span>
+            <strong>현재 사이트에서 사용</strong>
+            <small>LivePlayer 위에 처리 결과를 표시합니다.</small>
+          </span>
+          <span class="switch">
+            <input id="enabled" type="checkbox" />
+            <span aria-hidden="true"></span>
+          </span>
+        </label>
 
-      <p class="hint">일반 웹 페이지에서 테스트해 보세요.</p>
+        <div class="divider"></div>
+
+        <label class="field" for="mode">
+          <span>
+            <strong>처리 모드</strong>
+            <small>Auto는 화면 크기에 맞춰 자동 조절합니다.</small>
+          </span>
+          <select id="mode">
+            <option value="auto">Auto</option>
+            <option value="balanced">Balanced</option>
+            <option value="eco">Eco</option>
+          </select>
+        </label>
+
+        <label class="range-field" for="sharpness">
+          <span class="range-heading">
+            <span>
+              <strong>샤프닝</strong>
+              <small>경계에만 가볍게 적용합니다.</small>
+            </span>
+            <output id="sharpness-value" for="sharpness">12%</output>
+          </span>
+          <input id="sharpness" type="range" min="0" max="25" step="1" value="12" />
+        </label>
+
+        <label class="check-row" for="debug-overlay">
+          <input id="debug-overlay" type="checkbox" />
+          <span>영상 위에 성능 정보 표시</span>
+        </label>
+      </section>
+
+      <section id="metrics" class="metrics" hidden>
+        <div><span>Source</span><strong id="source-size">—</strong></div>
+        <div><span>Output</span><strong id="output-size">—</strong></div>
+        <div><span>Completion p90</span><strong id="frame-time">—</strong></div>
+      </section>
+
+      <footer>
+        <span class="privacy-dot"></span>
+        영상 데이터는 브라우저 밖으로 전송되지 않습니다.
+      </footer>
     </main>
 
     <script type="module" src="./main.ts"></script>

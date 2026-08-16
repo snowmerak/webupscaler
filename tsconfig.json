@@ -5,7 +5,7 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "types": ["chrome", "node", "vite/client"],
+    "types": ["chrome", "node", "vite/client", "@webgpu/types"],
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "moduleDetection": "force",

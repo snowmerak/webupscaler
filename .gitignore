@@ -1,5 +1,5 @@
 node_modules/
 dist/
+.q/
 .DS_Store
 *.log
-
