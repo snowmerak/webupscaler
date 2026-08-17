@@ -26,6 +26,7 @@ export class UpscalerController {
   private lastUrl = location.href
   private lastStatusSentAt = 0
   private recoveryAttempts = 0
+  private skippedSinceLastFrame = 0
 
   constructor(private readonly options: UpscalerControllerOptions) {
     this.settings = options.settings
@@ -110,6 +111,7 @@ export class UpscalerController {
     candidate.addEventListener('loadeddata', this.handleVideoReady, { once: true })
     candidate.addEventListener('resize', this.handleVideoReset)
     candidate.addEventListener('emptied', this.handleVideoReset)
+    candidate.addEventListener('seeking', this.handleHistoryReset)
   }
 
   private readonly handleVideoReady = () => {
@@ -120,16 +122,26 @@ export class UpscalerController {
     this.syncVideo(true)
   }
 
+  private readonly handleHistoryReset = () => {
+    this.processor?.resetHistory()
+    this.overlay?.hide()
+  }
+
   private attachVideo(video: HTMLVideoElement) {
+    video.addEventListener('resize', this.handleVideoReset)
+    video.addEventListener('emptied', this.handleVideoReset)
+    video.addEventListener('seeking', this.handleHistoryReset)
     const host = this.options.adapter.getOverlayHost(video)
     this.overlay = new OverlayController(video, host)
     this.processor = this.createProcessor(this.overlay.canvas)
     this.metrics = new MetricsTracker()
+    this.skippedSinceLastFrame = 0
     this.recoveryAttempts = 0
     this.scheduler = new FrameScheduler(video, {
-      process: async () => this.processFrame(video),
+      process: async (metadata) => this.processFrame(video, metadata),
       onSkipped: () => {
         this.metrics.recordSkipped()
+        this.skippedSinceLastFrame += 1
       },
       onError: (error) => this.handleFrameError(error),
     })
@@ -147,7 +159,7 @@ export class UpscalerController {
     return new WebGpuUpscaler(canvas, (message) => this.handleDeviceLost(message))
   }
 
-  private async processFrame(video: HTMLVideoElement) {
+  private async processFrame(video: HTMLVideoElement, metadata: VideoFrameCallbackMetadata) {
     if (!this.settings.enabled || video !== this.video || video.videoWidth === 0) return
 
     const target = calculateOutputTarget(video, this.settings)
@@ -164,10 +176,15 @@ export class UpscalerController {
       return
     }
 
-    const completionMs = await this.processor?.process(video, target, this.settings)
-    if (completionMs === undefined) return
+    const result = await this.processor?.process(video, target, this.settings, {
+      mediaTime: metadata.mediaTime,
+      skippedFrames: this.skippedSinceLastFrame,
+    })
+    if (result === undefined) return
+    this.skippedSinceLastFrame = 0
+    if (result.historyReset) this.metrics.recordHistoryReset()
 
-    this.metrics.recordCompletion(completionMs)
+    this.metrics.recordCompletion(result.completionMs)
     this.overlay?.show()
     this.overlay?.layout()
     const metrics = this.metrics.snapshot(
@@ -197,6 +214,7 @@ export class UpscalerController {
           `Mode ${this.settings.mode}`,
           `Completion ${metrics.completionMs.toFixed(1)} ms / p90 ${metrics.completionP90Ms.toFixed(1)} ms`,
           `Skipped ${metrics.skippedFrames}`,
+          `History resets ${metrics.historyResets}`,
         ].join('\n')
       : `Web Upscaler v2\nState ${this.status.state}`
     this.overlay?.setDebug(text, this.settings.debugOverlay)
@@ -260,6 +278,7 @@ export class UpscalerController {
       this.video.removeEventListener('loadeddata', this.handleVideoReady)
       this.video.removeEventListener('resize', this.handleVideoReset)
       this.video.removeEventListener('emptied', this.handleVideoReset)
+      this.video.removeEventListener('seeking', this.handleHistoryReset)
     }
     this.scheduler?.stop()
     this.processor?.destroy()
@@ -276,4 +295,3 @@ export class UpscalerController {
     this.stopSession()
   }
 }
-

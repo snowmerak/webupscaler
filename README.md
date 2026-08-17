@@ -1,6 +1,6 @@
 # Web Upscaler v2
 
-SOOP `video#livePlayer`를 감지하고 WebGPU로 실시간 공간 업스케일링하는 Chrome Manifest V3 확장입니다.
+SOOP `video#livePlayer`를 감지하고 WebGPU로 실시간 temporal 업스케일링하는 Chrome Manifest V3 확장입니다.
 
 현재 구현된 처리 경로:
 
@@ -8,7 +8,9 @@ SOOP `video#livePlayer`를 감지하고 WebGPU로 실시간 공간 업스케일�
 HTMLVideoElement
   → copyExternalImageToTexture (프레임당 1회)
   → 1/4 해상도 feature 분석
-  → 방향성 공간 복원
+  → 저해상도 motion 추정 (속도/가속도 예측)
+  → history 재투영 및 신뢰도 기반 temporal 복원
+  → 방향성 공간 복원과 결합
   → 선택적 5-tap light sharpen
   → WebGPU canvas
 ```
@@ -37,6 +39,7 @@ npm run dev
 - 팝업 미리보기: `http://127.0.0.1:5173/src/popup/index.html`
 - Synthetic GPU harness: `http://127.0.0.1:5173/src/demo/index.html`
 - 타입 검사: `npm run typecheck`
+- WGSL 정적 검사: `npm run validate:shaders`
 - 프로덕션 빌드: `npm run build`
 
 ## 구조
@@ -55,5 +58,4 @@ src/
 
 ## 현재 범위
 
-이번 버전은 SOOP-first 기반과 공간 업스케일 경로를 구현합니다. Temporal motion estimation과 history accumulation은 아직 포함하지 않았으며, 현재 런타임과 GPU 리소스 경계 위에 후속 구현할 수 있도록 분리돼 있습니다.
-
+이번 버전은 SOOP-first 기반, 저해상도 motion estimation, ping-pong history accumulation, 장면 전환/탐색 시 history reset을 구현합니다. Auto 모드의 장치별 자동 튜닝과 실제 방송별 화질·성능 프로파일링은 후속 범위입니다.

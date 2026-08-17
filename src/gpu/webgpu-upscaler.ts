@@ -1,22 +1,44 @@
-import type { BaseUpscalerSettings } from '../shared/settings'
 import type { OutputTarget } from '../runtime/output-policy'
+import type { BaseUpscalerSettings } from '../shared/settings'
 import analyzeShader from './shaders/analyze.wgsl?raw'
 import compositeShader from './shaders/composite.wgsl?raw'
+import motionShader from './shaders/motion.wgsl?raw'
 import reconstructShader from './shaders/reconstruct.wgsl?raw'
+
+type Pair<T> = [T, T]
+
+export interface FrameTiming {
+  mediaTime: number
+  skippedFrames: number
+}
+
+export interface ProcessResult {
+  completionMs: number
+  historyReset: boolean
+}
 
 interface GpuResources {
   input: GPUTexture
-  feature: GPUTexture
-  output: GPUTexture
-  analyzeBindGroup: GPUBindGroup
-  reconstructBindGroup: GPUBindGroup
-  compositeBindGroup: GPUBindGroup
+  features: Pair<GPUTexture>
+  motionStates: Pair<GPUTexture>
+  motionMeta: Pair<GPUTexture>
+  history: Pair<GPUTexture>
+  analyzeBindGroups: Pair<GPUBindGroup>
+  motionBindGroups: Pair<GPUBindGroup>
+  reconstructBindGroups: Pair<GPUBindGroup>
+  compositeBindGroups: Pair<GPUBindGroup>
   inputWidth: number
   inputHeight: number
   outputWidth: number
   outputHeight: number
   analysisWidth: number
   analysisHeight: number
+  motionWidth: number
+  motionHeight: number
+}
+
+export interface WebGpuUpscalerOptions {
+  allowFallbackAdapter?: boolean
 }
 
 export class WebGpuUnavailableError extends Error {
@@ -41,15 +63,22 @@ export class WebGpuUpscaler {
   private sampler: GPUSampler | null = null
   private uniformBuffer: GPUBuffer | null = null
   private analyzePipeline: GPUComputePipeline | null = null
+  private motionPipeline: GPUComputePipeline | null = null
   private reconstructPipeline: GPUComputePipeline | null = null
   private compositePipeline: GPURenderPipeline | null = null
   private resources: GpuResources | null = null
   private disposed = false
   private initialization: Promise<void> | null = null
+  private readonly uniformData = new Float32Array(32)
+  private frameIndex = 0
+  private lastMediaTime: number | null = null
+  private previousDt = 1 / 60
+  private resetNextFrame = true
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
     private readonly onDeviceLost: (message: string) => void,
+    private readonly options: WebGpuUpscalerOptions = {},
   ) {}
 
   async initialize() {
@@ -63,6 +92,9 @@ export class WebGpuUpscaler {
     if (!navigator.gpu) throw new WebGpuUnavailableError()
 
     this.adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' })
+    if (!this.adapter && this.options.allowFallbackAdapter) {
+      this.adapter = await navigator.gpu.requestAdapter({ forceFallbackAdapter: true })
+    }
     if (!this.adapter) throw new WebGpuUnavailableError('WebGPU 어댑터를 찾지 못했습니다.')
 
     this.device = await this.adapter.requestDevice()
@@ -81,7 +113,6 @@ export class WebGpuUpscaler {
       format: this.canvasFormat,
       alphaMode: 'opaque',
     })
-
     this.sampler = this.device.createSampler({
       label: 'Web Upscaler linear clamp sampler',
       magFilter: 'linear',
@@ -91,16 +122,18 @@ export class WebGpuUpscaler {
     })
     this.uniformBuffer = this.device.createBuffer({
       label: 'Web Upscaler frame uniforms',
-      size: 64,
+      size: 128,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
 
     const analyzeModule = this.device.createShaderModule({ label: 'Analyze shader', code: analyzeShader })
-    const reconstructModule = this.device.createShaderModule({ label: 'Reconstruct shader', code: reconstructShader })
+    const motionModule = this.device.createShaderModule({ label: 'Motion shader', code: motionShader })
+    const reconstructModule = this.device.createShaderModule({ label: 'Temporal reconstruct shader', code: reconstructShader })
     const compositeModule = this.device.createShaderModule({ label: 'Composite shader', code: compositeShader })
     await Promise.all([
       this.assertShader(analyzeModule, 'Analyze'),
-      this.assertShader(reconstructModule, 'Reconstruct'),
+      this.assertShader(motionModule, 'Motion'),
+      this.assertShader(reconstructModule, 'Temporal reconstruct'),
       this.assertShader(compositeModule, 'Composite'),
     ])
 
@@ -109,8 +142,13 @@ export class WebGpuUpscaler {
       layout: 'auto',
       compute: { module: analyzeModule, entryPoint: 'main' },
     })
+    this.motionPipeline = await this.device.createComputePipelineAsync({
+      label: 'Acceleration-predicted motion pipeline',
+      layout: 'auto',
+      compute: { module: motionModule, entryPoint: 'main' },
+    })
     this.reconstructPipeline = await this.device.createComputePipelineAsync({
-      label: 'Reconstruct pipeline',
+      label: 'Temporal reconstruction pipeline',
       layout: 'auto',
       compute: { module: reconstructModule, entryPoint: 'main' },
     })
@@ -137,10 +175,16 @@ export class WebGpuUpscaler {
     }
   }
 
+  private pair<T>(factory: (index: number) => T): Pair<T> {
+    return [factory(0), factory(1)]
+  }
+
   private ensureResources(video: HTMLVideoElement, target: OutputTarget) {
     const device = this.requireDevice()
     const analysisWidth = Math.ceil(video.videoWidth / 4)
     const analysisHeight = Math.ceil(video.videoHeight / 4)
+    const motionWidth = Math.ceil(video.videoWidth / 16)
+    const motionHeight = Math.ceil(video.videoHeight / 16)
     const existing = this.resources
 
     if (existing
@@ -151,7 +195,12 @@ export class WebGpuUpscaler {
       return existing
     }
 
+    if (Math.max(target.width, target.height) > device.limits.maxTextureDimension2D) {
+      throw new WebGpuUnavailableError('요청한 출력 크기가 GPU texture 제한을 넘었습니다.')
+    }
+
     this.destroyResources()
+    this.resetTemporalState()
     this.canvas.width = target.width
     this.canvas.height = target.height
 
@@ -161,81 +210,174 @@ export class WebGpuUpscaler {
       format: 'rgba8unorm',
       usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
     })
-    const feature = device.createTexture({
-      label: 'Quarter-resolution features',
+    const features = this.pair((index) => device.createTexture({
+      label: `Quarter-resolution features ${index}`,
       size: [analysisWidth, analysisHeight],
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    })
-    const output = device.createTexture({
-      label: 'Spatial reconstruction',
+    }))
+    const motionStates = this.pair((index) => device.createTexture({
+      label: `Motion velocity and acceleration ${index}`,
+      size: [motionWidth, motionHeight],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
+    const motionMeta = this.pair((index) => device.createTexture({
+      label: `Motion displacement and confidence ${index}`,
+      size: [motionWidth, motionHeight],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
+    const history = this.pair((index) => device.createTexture({
+      label: `Temporal history ${index}`,
       size: [target.width, target.height],
       format: 'rgba8unorm',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    })
+    }))
     const sampler = this.requireSampler()
     const uniformBuffer = this.requireUniformBuffer()
     const analyzePipeline = this.requireAnalyzePipeline()
+    const motionPipeline = this.requireMotionPipeline()
     const reconstructPipeline = this.requireReconstructPipeline()
     const compositePipeline = this.requireCompositePipeline()
+    const analyzeBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Analyze bind group ${current}`,
+      layout: analyzePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: input.createView() },
+        { binding: 1, resource: sampler },
+        { binding: 2, resource: features[current].createView() },
+        { binding: 3, resource: { buffer: uniformBuffer } },
+      ],
+    }))
+    const motionBindGroups = this.pair((current) => {
+      const previous = 1 - current
+      return device.createBindGroup({
+        label: `Motion bind group ${current}`,
+        layout: motionPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: features[current].createView() },
+          { binding: 1, resource: features[previous].createView() },
+          { binding: 2, resource: motionStates[previous].createView() },
+          { binding: 3, resource: motionMeta[previous].createView() },
+          { binding: 4, resource: motionStates[current].createView() },
+          { binding: 5, resource: motionMeta[current].createView() },
+          { binding: 6, resource: sampler },
+          { binding: 7, resource: { buffer: uniformBuffer } },
+        ],
+      })
+    })
+    const reconstructBindGroups = this.pair((current) => {
+      const previous = 1 - current
+      return device.createBindGroup({
+        label: `Temporal reconstruct bind group ${current}`,
+        layout: reconstructPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: input.createView() },
+          { binding: 1, resource: features[current].createView() },
+          { binding: 2, resource: motionMeta[current].createView() },
+          { binding: 3, resource: motionMeta[previous].createView() },
+          { binding: 4, resource: history[previous].createView() },
+          { binding: 5, resource: history[current].createView() },
+          { binding: 6, resource: sampler },
+          { binding: 7, resource: { buffer: uniformBuffer } },
+        ],
+      })
+    })
+    const compositeBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Composite bind group ${current}`,
+      layout: compositePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: history[current].createView() },
+        { binding: 1, resource: sampler },
+        { binding: 2, resource: { buffer: uniformBuffer } },
+      ],
+    }))
 
     this.resources = {
       input,
-      feature,
-      output,
+      features,
+      motionStates,
+      motionMeta,
+      history,
+      analyzeBindGroups,
+      motionBindGroups,
+      reconstructBindGroups,
+      compositeBindGroups,
       inputWidth: video.videoWidth,
       inputHeight: video.videoHeight,
       outputWidth: target.width,
       outputHeight: target.height,
       analysisWidth,
       analysisHeight,
-      analyzeBindGroup: device.createBindGroup({
-        label: 'Analyze bind group',
-        layout: analyzePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: input.createView() },
-          { binding: 1, resource: sampler },
-          { binding: 2, resource: feature.createView() },
-          { binding: 3, resource: { buffer: uniformBuffer } },
-        ],
-      }),
-      reconstructBindGroup: device.createBindGroup({
-        label: 'Reconstruct bind group',
-        layout: reconstructPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: input.createView() },
-          { binding: 1, resource: feature.createView() },
-          { binding: 2, resource: output.createView() },
-          { binding: 3, resource: sampler },
-          { binding: 4, resource: { buffer: uniformBuffer } },
-        ],
-      }),
-      compositeBindGroup: device.createBindGroup({
-        label: 'Composite bind group',
-        layout: compositePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: output.createView() },
-          { binding: 1, resource: sampler },
-          { binding: 2, resource: { buffer: uniformBuffer } },
-        ],
-      }),
+      motionWidth,
+      motionHeight,
     }
-
     return this.resources
   }
 
-  async process(video: HTMLVideoElement, target: OutputTarget, settings: BaseUpscalerSettings) {
+  private getTiming(mediaTime: number) {
+    const difference = this.lastMediaTime === null ? this.previousDt : mediaTime - this.lastMediaTime
+    const discontinuity = difference <= 0 || difference > Math.max(0.25, this.previousDt * 4)
+    const reset = this.resetNextFrame || this.lastMediaTime === null || discontinuity
+    const dt = reset ? this.previousDt : Math.min(0.2, Math.max(1 / 240, difference))
+    return { dt, reset }
+  }
+
+  private writeUniforms(
+    video: HTMLVideoElement,
+    target: OutputTarget,
+    settings: BaseUpscalerSettings,
+    resources: GpuResources,
+    timing: { dt: number; reset: boolean },
+    skippedFrames: number,
+  ) {
+    const data = this.uniformData
+    data.fill(0)
+    data[0] = video.videoWidth
+    data[1] = video.videoHeight
+    data[2] = 1 / video.videoWidth
+    data[3] = 1 / video.videoHeight
+    data[4] = target.width
+    data[5] = target.height
+    data[6] = 1 / target.width
+    data[7] = 1 / target.height
+    data[8] = resources.analysisWidth
+    data[9] = resources.analysisHeight
+    data[10] = 1 / resources.analysisWidth
+    data[11] = 1 / resources.analysisHeight
+    data[12] = resources.motionWidth
+    data[13] = resources.motionHeight
+    data[14] = 1 / resources.motionWidth
+    data[15] = 1 / resources.motionHeight
+    data[16] = timing.dt
+    data[17] = this.previousDt
+    data[18] = target.scale
+    data[19] = settings.mode === 'eco' ? 0.6 : 0.75
+    data[20] = settings.mode === 'eco' ? 0 : settings.sharpness
+    data[21] = 2400
+    data[22] = Math.pow(0.94, skippedFrames + 1)
+    data[23] = settings.mode === 'eco' ? 0.7 : 0.85
+    data[24] = timing.reset ? 1 : 0
+    data[25] = settings.mode === 'auto' ? 0 : settings.mode === 'balanced' ? 1 : 2
+    data[26] = this.frameIndex
+    data[27] = skippedFrames
+    this.requireDevice().queue.writeBuffer(this.requireUniformBuffer(), 0, data)
+  }
+
+  async process(
+    video: HTMLVideoElement,
+    target: OutputTarget,
+    settings: BaseUpscalerSettings,
+    frameTiming: FrameTiming,
+  ): Promise<ProcessResult> {
     await this.initialize()
     const device = this.requireDevice()
     const context = this.requireContext()
     const resources = this.ensureResources(video, target)
-    const uniforms = new Float32Array([
-      video.videoWidth, video.videoHeight, 1 / video.videoWidth, 1 / video.videoHeight,
-      target.width, target.height, 1 / target.width, 1 / target.height,
-      resources.analysisWidth, resources.analysisHeight, 1 / resources.analysisWidth, 1 / resources.analysisHeight,
-      target.scale, settings.mode === 'eco' ? 0 : settings.sharpness, 0, 0,
-    ])
-    device.queue.writeBuffer(this.requireUniformBuffer(), 0, uniforms)
+    const timing = this.getTiming(frameTiming.mediaTime)
+    const current = this.frameIndex % 2
+    this.writeUniforms(video, target, settings, resources, timing, frameTiming.skippedFrames)
 
     try {
       device.queue.copyExternalImageToTexture(
@@ -250,16 +392,22 @@ export class WebGpuUpscaler {
       throw error
     }
 
-    const encoder = device.createCommandEncoder({ label: 'Web Upscaler frame encoder' })
+    const encoder = device.createCommandEncoder({ label: 'Web Upscaler temporal frame encoder' })
     const analyzePass = encoder.beginComputePass({ label: 'Analyze pass' })
     analyzePass.setPipeline(this.requireAnalyzePipeline())
-    analyzePass.setBindGroup(0, resources.analyzeBindGroup)
+    analyzePass.setBindGroup(0, resources.analyzeBindGroups[current])
     analyzePass.dispatchWorkgroups(Math.ceil(resources.analysisWidth / 8), Math.ceil(resources.analysisHeight / 8))
     analyzePass.end()
 
-    const reconstructPass = encoder.beginComputePass({ label: 'Reconstruct pass' })
+    const motionPass = encoder.beginComputePass({ label: 'Acceleration-predicted motion pass' })
+    motionPass.setPipeline(this.requireMotionPipeline())
+    motionPass.setBindGroup(0, resources.motionBindGroups[current])
+    motionPass.dispatchWorkgroups(Math.ceil(resources.motionWidth / 8), Math.ceil(resources.motionHeight / 8))
+    motionPass.end()
+
+    const reconstructPass = encoder.beginComputePass({ label: 'Temporal reconstruction pass' })
     reconstructPass.setPipeline(this.requireReconstructPipeline())
-    reconstructPass.setBindGroup(0, resources.reconstructBindGroup)
+    reconstructPass.setBindGroup(0, resources.reconstructBindGroups[current])
     reconstructPass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
     reconstructPass.end()
 
@@ -273,14 +421,31 @@ export class WebGpuUpscaler {
       }],
     })
     compositePass.setPipeline(this.requireCompositePipeline())
-    compositePass.setBindGroup(0, resources.compositeBindGroup)
+    compositePass.setBindGroup(0, resources.compositeBindGroups[current])
     compositePass.draw(3)
     compositePass.end()
 
     const startedAt = performance.now()
     device.queue.submit([encoder.finish()])
     await device.queue.onSubmittedWorkDone()
-    return performance.now() - startedAt
+    const completionMs = performance.now() - startedAt
+
+    this.lastMediaTime = frameTiming.mediaTime
+    this.previousDt = timing.dt
+    this.resetNextFrame = false
+    this.frameIndex += 1
+    return { completionMs, historyReset: timing.reset }
+  }
+
+  resetHistory() {
+    this.resetNextFrame = true
+  }
+
+  private resetTemporalState() {
+    this.frameIndex = 0
+    this.lastMediaTime = null
+    this.previousDt = 1 / 60
+    this.resetNextFrame = true
   }
 
   private requireDevice() {
@@ -308,8 +473,13 @@ export class WebGpuUpscaler {
     return this.analyzePipeline
   }
 
+  private requireMotionPipeline() {
+    if (!this.motionPipeline) throw new WebGpuUnavailableError('Motion pipeline이 초기화되지 않았습니다.')
+    return this.motionPipeline
+  }
+
   private requireReconstructPipeline() {
-    if (!this.reconstructPipeline) throw new WebGpuUnavailableError('Reconstruct pipeline이 초기화되지 않았습니다.')
+    if (!this.reconstructPipeline) throw new WebGpuUnavailableError('Temporal reconstruction pipeline이 초기화되지 않았습니다.')
     return this.reconstructPipeline
   }
 
@@ -320,8 +490,10 @@ export class WebGpuUpscaler {
 
   private destroyResources() {
     this.resources?.input.destroy()
-    this.resources?.feature.destroy()
-    this.resources?.output.destroy()
+    for (const texture of this.resources?.features ?? []) texture.destroy()
+    for (const texture of this.resources?.motionStates ?? []) texture.destroy()
+    for (const texture of this.resources?.motionMeta ?? []) texture.destroy()
+    for (const texture of this.resources?.history ?? []) texture.destroy()
     this.resources = null
   }
 

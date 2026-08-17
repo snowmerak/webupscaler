@@ -22,6 +22,7 @@ export interface RuntimeMetrics {
   completionP90Ms: number
   processedFrames: number
   skippedFrames: number
+  historyResets: number
 }
 
 export interface RuntimeStatus {
@@ -42,4 +43,3 @@ export const INITIAL_STATUS: RuntimeStatus = {
   adapter: 'unsupported',
   message: '지원 사이트가 아닙니다.',
 }
-

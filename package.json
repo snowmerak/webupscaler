@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "npm run typecheck && vite build",
+    "build": "npm run validate:shaders && npm run typecheck && vite build",
     "typecheck": "tsc --noEmit",
+    "validate:shaders": "node scripts/validate-shaders.mjs",
     "preview": "vite preview"
   },
   "devDependencies": {
@@ -15,6 +16,7 @@
     "@types/node": "^26.2.0",
     "@webgpu/types": "^0.1.71",
     "typescript": "^7.0.2",
-    "vite": "^8.2.1"
+    "vite": "^8.2.1",
+    "wgsl_reflect": "^1.5.0"
   }
 }

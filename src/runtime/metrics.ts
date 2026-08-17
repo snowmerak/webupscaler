@@ -4,6 +4,7 @@ export class MetricsTracker {
   private readonly samples: number[] = []
   private processedFrames = 0
   private skippedFrames = 0
+  private historyResets = 0
 
   recordCompletion(value: number) {
     this.processedFrames += 1
@@ -13,6 +14,10 @@ export class MetricsTracker {
 
   recordSkipped() {
     this.skippedFrames += 1
+  }
+
+  recordHistoryReset() {
+    this.historyResets += 1
   }
 
   snapshot(sourceWidth: number, sourceHeight: number, outputWidth: number, outputHeight: number): RuntimeMetrics {
@@ -29,7 +34,7 @@ export class MetricsTracker {
       completionP90Ms: sorted[p90Index] ?? latest,
       processedFrames: this.processedFrames,
       skippedFrames: this.skippedFrames,
+      historyResets: this.historyResets,
     }
   }
 }
-

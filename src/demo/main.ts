@@ -33,7 +33,7 @@ const target = { kind: 'upscale', width: 960, height: 540, scale: 2 } as const
 const upscaler = new WebGpuUpscaler(output, (message) => {
   status.textContent = `GPU 연결 끊김: ${message}`
   status.dataset.tone = 'error'
-})
+}, { allowFallbackAdapter: true })
 let animationFrame = 0
 let animationStartedAt = performance.now()
 let running = true
@@ -88,11 +88,14 @@ async function processFrame() {
   if (inFlight || !running) return
   inFlight = true
   try {
-    const completionMs = await upscaler.process(video, target, settings)
+    const result = await upscaler.process(video, target, settings, {
+      mediaTime: video.currentTime,
+      skippedFrames: 0,
+    })
     processed += 1
     status.textContent = '실행 중'
     status.dataset.tone = 'running'
-    metrics.textContent = `처리 ${processed.toLocaleString()} 프레임 · 완료 지연 ${completionMs.toFixed(1)} ms`
+    metrics.textContent = `처리 ${processed.toLocaleString()} 프레임 · 완료 지연 ${result.completionMs.toFixed(1)} ms${result.historyReset ? ' · history reset' : ''}`
   } catch (error) {
     status.textContent = '실행 오류'
     status.dataset.tone = 'error'

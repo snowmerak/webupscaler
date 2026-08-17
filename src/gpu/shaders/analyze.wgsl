@@ -2,7 +2,10 @@ struct FrameUniforms {
   inputSize: vec4<f32>,
   outputSize: vec4<f32>,
   analysisSize: vec4<f32>,
-  params: vec4<f32>,
+  motionSize: vec4<f32>,
+  timeScale: vec4<f32>,
+  thresholds: vec4<f32>,
+  flags: vec4<f32>,
 }
 
 @group(0) @binding(0) var inputFrame: texture_2d<f32>;
