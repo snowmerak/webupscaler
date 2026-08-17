@@ -21,7 +21,7 @@ const controls = {
   deblockStrength: required<HTMLInputElement>('#deblock-strength'),
   deblockStrengthValue: required<HTMLOutputElement>('#deblock-strength-value'),
   debugOverlay: required<HTMLInputElement>('#debug-overlay'),
-  coverageOverlay: required<HTMLInputElement>('#coverage-overlay'),
+  diagnosticView: required<HTMLSelectElement>('#diagnostic-view'),
 }
 const view = {
   badge: required<HTMLSpanElement>('#state-badge'),
@@ -68,10 +68,10 @@ function render() {
   controls.deblockStrength.value = String(Math.round(settings.deblockStrength * 100))
   controls.deblockStrengthValue.value = `${Math.round(settings.deblockStrength * 100)}%`
   controls.debugOverlay.checked = settings.debugOverlay
-  controls.coverageOverlay.checked = settings.coverageOverlay
+  controls.diagnosticView.value = settings.diagnosticView
 
   const disabled = !status.supportedSite
-  for (const control of [controls.enabled, controls.mode, controls.sharpness, controls.deblockStrength, controls.debugOverlay, controls.coverageOverlay]) {
+  for (const control of [controls.enabled, controls.mode, controls.sharpness, controls.deblockStrength, controls.debugOverlay, controls.diagnosticView]) {
     control.disabled = disabled
   }
 
@@ -128,8 +128,11 @@ controls.deblockStrength.addEventListener('change', () => {
 controls.debugOverlay.addEventListener('change', () => {
   void update({ type: 'UPDATE_SETTINGS', patch: { debugOverlay: controls.debugOverlay.checked } }).catch(showError)
 })
-controls.coverageOverlay.addEventListener('change', () => {
-  void update({ type: 'UPDATE_SETTINGS', patch: { coverageOverlay: controls.coverageOverlay.checked } }).catch(showError)
+controls.diagnosticView.addEventListener('change', () => {
+  void update({
+    type: 'UPDATE_SETTINGS',
+    patch: { diagnosticView: controls.diagnosticView.value as UpscalerSettings['diagnosticView'] },
+  }).catch(showError)
 })
 
 function showError(error: unknown) {

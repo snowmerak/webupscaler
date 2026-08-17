@@ -1,6 +1,7 @@
 export const SETTINGS_KEY = 'upscalerSettings'
 
 export type UpscalerMode = 'auto' | 'balanced' | 'eco'
+export type DiagnosticView = 'off' | 'coverage' | 'variance' | 'samples' | 'residual' | 'correction' | 'motion'
 
 export interface BaseUpscalerSettings {
   enabled: boolean
@@ -9,7 +10,7 @@ export interface BaseUpscalerSettings {
   sharpness: number
   deblockStrength: number
   debugOverlay: boolean
-  coverageOverlay: boolean
+  diagnosticView: DiagnosticView
 }
 
 export interface UpscalerSettings extends BaseUpscalerSettings {
@@ -23,12 +24,22 @@ export const DEFAULT_SETTINGS: UpscalerSettings = {
   sharpness: 0.12,
   deblockStrength: 0.3,
   debugOverlay: false,
-  coverageOverlay: false,
+  diagnosticView: 'off',
   perHost: {},
 }
 
 function isMode(value: unknown): value is UpscalerMode {
   return value === 'auto' || value === 'balanced' || value === 'eco'
+}
+
+function isDiagnosticView(value: unknown): value is DiagnosticView {
+  return value === 'off'
+    || value === 'coverage'
+    || value === 'variance'
+    || value === 'samples'
+    || value === 'residual'
+    || value === 'correction'
+    || value === 'motion'
 }
 
 export function normalizeSettings(value: unknown): UpscalerSettings {
@@ -49,9 +60,11 @@ export function normalizeSettings(value: unknown): UpscalerSettings {
     debugOverlay: typeof input.debugOverlay === 'boolean'
       ? input.debugOverlay
       : DEFAULT_SETTINGS.debugOverlay,
-    coverageOverlay: typeof input.coverageOverlay === 'boolean'
-      ? input.coverageOverlay
-      : DEFAULT_SETTINGS.coverageOverlay,
+    diagnosticView: isDiagnosticView(input.diagnosticView)
+      ? input.diagnosticView
+      : (input as { coverageOverlay?: unknown }).coverageOverlay === true
+        ? 'coverage'
+        : DEFAULT_SETTINGS.diagnosticView,
     perHost: typeof input.perHost === 'object' && input.perHost !== null
       ? input.perHost
       : {},
@@ -60,6 +73,7 @@ export function normalizeSettings(value: unknown): UpscalerSettings {
 
 export function settingsForHost(settings: UpscalerSettings, hostname: string): BaseUpscalerSettings {
   const override = settings.perHost[hostname] ?? {}
+  const legacyOverride = override as Partial<BaseUpscalerSettings> & { coverageOverlay?: unknown }
   const mode = isMode(override.mode) ? override.mode : settings.mode
 
   return {
@@ -75,8 +89,10 @@ export function settingsForHost(settings: UpscalerSettings, hostname: string): B
     debugOverlay: typeof override.debugOverlay === 'boolean'
       ? override.debugOverlay
       : settings.debugOverlay,
-    coverageOverlay: typeof override.coverageOverlay === 'boolean'
-      ? override.coverageOverlay
-      : settings.coverageOverlay,
+    diagnosticView: isDiagnosticView(override.diagnosticView)
+      ? override.diagnosticView
+      : legacyOverride.coverageOverlay === true
+        ? 'coverage'
+        : settings.diagnosticView,
   }
 }

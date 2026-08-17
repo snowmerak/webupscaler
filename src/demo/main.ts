@@ -1,5 +1,5 @@
 import { WebGpuUpscaler } from '../gpu/webgpu-upscaler'
-import type { BaseUpscalerSettings } from '../shared/settings'
+import type { BaseUpscalerSettings, DiagnosticView } from '../shared/settings'
 import './style.css'
 
 function required<T extends Element>(selector: string) {
@@ -31,7 +31,7 @@ const settings: BaseUpscalerSettings = {
   sharpness: 0.12,
   deblockStrength: 0.3,
   debugOverlay: false,
-  coverageOverlay: false,
+  diagnosticView: 'off',
 }
 const target = {
   kind: 'upscale',
@@ -53,6 +53,16 @@ let processed = 0
 let lastGpuQueueMs: number | null = null
 const deblockLevels = [0, 0.3, 0.5]
 let deblockLevelIndex = 1
+const diagnosticViews: Array<{ value: DiagnosticView; label: string }> = [
+  { value: 'off', label: '복원 진단: 끄기' },
+  { value: 'coverage', label: '복원 진단: Coverage' },
+  { value: 'variance', label: '복원 진단: Variance' },
+  { value: 'samples', label: '복원 진단: Samples' },
+  { value: 'residual', label: '복원 진단: Residual' },
+  { value: 'correction', label: '복원 진단: Correction' },
+  { value: 'motion', label: '복원 진단: Motion' },
+]
+let diagnosticViewIndex = 0
 
 function draw(now: number) {
   const elapsed = (now - animationStartedAt) / 1000
@@ -164,11 +174,10 @@ deblockToggle.addEventListener('click', () => {
 })
 
 coverageToggle.addEventListener('click', () => {
-  settings.coverageOverlay = !settings.coverageOverlay
-  coverageToggle.textContent = settings.coverageOverlay
-    ? '일반 영상 보기'
-    : 'Coverage heatmap 보기'
-  upscaler.resetHistory()
+  diagnosticViewIndex = (diagnosticViewIndex + 1) % diagnosticViews.length
+  const diagnostic = diagnosticViews[diagnosticViewIndex]
+  settings.diagnosticView = diagnostic.value
+  coverageToggle.textContent = diagnostic.label
 })
 
 async function initialize() {

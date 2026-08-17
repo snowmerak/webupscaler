@@ -28,9 +28,12 @@ interface GpuResources {
   motionStates: Pair<GPUTexture>
   motionMeta: Pair<GPUTexture>
   history: Pair<GPUTexture>
+  historyMoments: Pair<GPUTexture>
+  latentSeed: Pair<GPUTexture>
   latent: Pair<GPUTexture>
   latentScratch: Pair<GPUTexture>
-  residual: Pair<GPUTexture>
+  residualBefore: Pair<GPUTexture>
+  residualAfter: Pair<GPUTexture>
   deblockBindGroups: Pair<GPUBindGroup>
   analyzeBindGroups: Pair<GPUBindGroup>
   motionBindGroups: Pair<GPUBindGroup>
@@ -39,6 +42,7 @@ interface GpuResources {
   backprojectSeedBindGroups: Pair<GPUBindGroup>
   residualRefinedBindGroups: Pair<GPUBindGroup>
   backprojectRefinedBindGroups: Pair<GPUBindGroup>
+  residualFinalBindGroups: Pair<GPUBindGroup>
   compositeBindGroups: Pair<GPUBindGroup>
   inputWidth: number
   inputHeight: number
@@ -312,6 +316,18 @@ export class WebGpuUpscaler {
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }))
+    const historyMoments = this.pair((index) => device.createTexture({
+      label: `HR observation second moment and squared weight ${index}`,
+      size: [target.width, target.height],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
+    const latentSeed = this.pair((index) => device.createTexture({
+      label: `Latent HR seed ${index}`,
+      size: [target.width, target.height],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
     const latent = this.pair((index) => device.createTexture({
       label: `Latent HR reconstruction ${index}`,
       size: [target.width, target.height],
@@ -324,8 +340,14 @@ export class WebGpuUpscaler {
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }))
-    const residual = this.pair((index) => device.createTexture({
-      label: `LR reprojection residual and sumSq ${index}`,
+    const residualBefore = this.pair((index) => device.createTexture({
+      label: `LR seed residual and sumSq ${index}`,
+      size: [video.videoWidth, video.videoHeight],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
+    const residualAfter = this.pair((index) => device.createTexture({
+      label: `LR corrected residual and sumSq ${index}`,
       size: [video.videoWidth, video.videoHeight],
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
@@ -390,7 +412,9 @@ export class WebGpuUpscaler {
           { binding: 3, resource: history[current].createView() },
           { binding: 4, resource: sampler },
           { binding: 5, resource: { buffer: uniformBuffer } },
-          { binding: 6, resource: latent[current].createView() },
+          { binding: 6, resource: latentSeed[current].createView() },
+          { binding: 7, resource: historyMoments[previous].createView() },
+          { binding: 8, resource: historyMoments[current].createView() },
         ],
       })
     })
@@ -398,9 +422,9 @@ export class WebGpuUpscaler {
       label: `Seed LR residual bind group ${current}`,
       layout: residualPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: latent[current].createView() },
+        { binding: 0, resource: latentSeed[current].createView() },
         { binding: 1, resource: filteredInput[current].createView() },
-        { binding: 2, resource: residual[current].createView() },
+        { binding: 2, resource: residualBefore[current].createView() },
         { binding: 3, resource: { buffer: uniformBuffer } },
       ],
     }))
@@ -408,11 +432,13 @@ export class WebGpuUpscaler {
       label: `First HR back-projection bind group ${current}`,
       layout: backprojectSeedPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: latent[current].createView() },
-        { binding: 1, resource: residual[current].createView() },
+        { binding: 0, resource: latentSeed[current].createView() },
+        { binding: 1, resource: residualBefore[current].createView() },
         { binding: 2, resource: latentScratch[current].createView() },
         { binding: 3, resource: sampler },
         { binding: 4, resource: { buffer: uniformBuffer } },
+        { binding: 5, resource: history[current].createView() },
+        { binding: 6, resource: historyMoments[current].createView() },
       ],
     }))
     const residualRefinedBindGroups = this.pair((current) => device.createBindGroup({
@@ -421,7 +447,7 @@ export class WebGpuUpscaler {
       entries: [
         { binding: 0, resource: latentScratch[current].createView() },
         { binding: 1, resource: filteredInput[current].createView() },
-        { binding: 2, resource: residual[current].createView() },
+        { binding: 2, resource: residualAfter[current].createView() },
         { binding: 3, resource: { buffer: uniformBuffer } },
       ],
     }))
@@ -430,10 +456,22 @@ export class WebGpuUpscaler {
       layout: backprojectRefinedPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: latentScratch[current].createView() },
-        { binding: 1, resource: residual[current].createView() },
+        { binding: 1, resource: residualAfter[current].createView() },
         { binding: 2, resource: latent[current].createView() },
         { binding: 3, resource: sampler },
         { binding: 4, resource: { buffer: uniformBuffer } },
+        { binding: 5, resource: history[current].createView() },
+        { binding: 6, resource: historyMoments[current].createView() },
+      ],
+    }))
+    const residualFinalBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Final LR residual bind group ${current}`,
+      layout: residualPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: latent[current].createView() },
+        { binding: 1, resource: filteredInput[current].createView() },
+        { binding: 2, resource: residualAfter[current].createView() },
+        { binding: 3, resource: { buffer: uniformBuffer } },
       ],
     }))
     const compositeBindGroups = this.pair((current) => device.createBindGroup({
@@ -445,6 +483,12 @@ export class WebGpuUpscaler {
         { binding: 2, resource: features[current].createView() },
         { binding: 3, resource: sampler },
         { binding: 4, resource: { buffer: uniformBuffer } },
+        { binding: 5, resource: history[current].createView() },
+        { binding: 6, resource: historyMoments[current].createView() },
+        { binding: 7, resource: residualBefore[current].createView() },
+        { binding: 8, resource: residualAfter[current].createView() },
+        { binding: 9, resource: latentSeed[current].createView() },
+        { binding: 10, resource: motionMeta[current].createView() },
       ],
     }))
 
@@ -455,9 +499,12 @@ export class WebGpuUpscaler {
       motionStates,
       motionMeta,
       history,
+      historyMoments,
+      latentSeed,
       latent,
       latentScratch,
-      residual,
+      residualBefore,
+      residualAfter,
       deblockBindGroups,
       analyzeBindGroups,
       motionBindGroups,
@@ -466,6 +513,7 @@ export class WebGpuUpscaler {
       backprojectSeedBindGroups,
       residualRefinedBindGroups,
       backprojectRefinedBindGroups,
+      residualFinalBindGroups,
       compositeBindGroups,
       inputWidth: video.videoWidth,
       inputHeight: video.videoHeight,
@@ -524,7 +572,15 @@ export class WebGpuUpscaler {
     data[24] = timing.reset ? 1 : 0
     data[25] = settings.mode === 'auto' ? 0 : settings.mode === 'balanced' ? 1 : 2
     data[26] = this.frameIndex
-    data[27] = settings.coverageOverlay ? 1 : 0
+    data[27] = {
+      off: 0,
+      coverage: 1,
+      variance: 2,
+      samples: 3,
+      residual: 4,
+      correction: 5,
+      motion: 6,
+    }[settings.diagnosticView]
     this.requireDevice().queue.writeBuffer(this.requireUniformBuffer(), 0, data)
   }
 
@@ -656,6 +712,15 @@ export class WebGpuUpscaler {
     backprojectRefinedPass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
     backprojectRefinedPass.end()
 
+    const residualFinalPass = encoder.beginComputePass({ label: 'Latent-to-LR final residual pass' })
+    residualFinalPass.setPipeline(this.requireResidualPipeline())
+    residualFinalPass.setBindGroup(0, resources.residualFinalBindGroups[current])
+    residualFinalPass.dispatchWorkgroups(
+      Math.ceil(resources.inputWidth / 8),
+      Math.ceil(resources.inputHeight / 8),
+    )
+    residualFinalPass.end()
+
     const compositePass = encoder.beginRenderPass({
       label: 'Composite pass',
       colorAttachments: [{
@@ -769,9 +834,12 @@ export class WebGpuUpscaler {
     for (const texture of this.resources?.motionStates ?? []) texture.destroy()
     for (const texture of this.resources?.motionMeta ?? []) texture.destroy()
     for (const texture of this.resources?.history ?? []) texture.destroy()
+    for (const texture of this.resources?.historyMoments ?? []) texture.destroy()
+    for (const texture of this.resources?.latentSeed ?? []) texture.destroy()
     for (const texture of this.resources?.latent ?? []) texture.destroy()
     for (const texture of this.resources?.latentScratch ?? []) texture.destroy()
-    for (const texture of this.resources?.residual ?? []) texture.destroy()
+    for (const texture of this.resources?.residualBefore ?? []) texture.destroy()
+    for (const texture of this.resources?.residualAfter ?? []) texture.destroy()
     this.resources = null
   }
 

@@ -15,6 +15,8 @@ override correctionGain: f32 = 0.24;
 @group(0) @binding(2) var latentOutput: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(3) var linearClamp: sampler;
 @group(0) @binding(4) var<uniform> uniforms: FrameUniforms;
+@group(0) @binding(5) var observationAccumulator: texture_2d<f32>;
+@group(0) @binding(6) var observationMoments: texture_2d<f32>;
 
 fn rgbToYCoCg(color: vec3<f32>) -> vec3<f32> {
   return vec3<f32>(
@@ -68,15 +70,39 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
       lrResidual, linearClamp, sourceUv + vec2<f32>(0.0, residualTexel.y), 0.0
     ) * 0.09375;
 
+  let accumulator = textureLoad(observationAccumulator, position, 0);
+  let moments = textureLoad(observationMoments, position, 0);
+  let coverage = max(accumulator.a, 0.0);
+  let observationMean = accumulator.rgb / max(coverage, 0.0001);
+  let secondMoment = moments.rgb / max(coverage, 0.0001);
+  let variance = max(
+    secondMoment - observationMean * observationMean,
+    vec3<f32>(0.0),
+  );
+  let varianceLuma = dot(variance, vec3<f32>(0.25, 0.5, 0.25));
+  let effectiveSamples = coverage * coverage / max(moments.a, 0.0001);
+  let varianceTrust = exp(-varianceLuma * 72.0);
+  let sampleTrust = clamp((effectiveSamples - 1.0) / 3.0, 0.0, 1.0);
+  let observationConfidence = smoothstep(0.02, 0.85, coverage)
+    * varianceTrust
+    * mix(0.55, 1.0, sampleTrust);
+
+  // LR residual is itself a real observation and must reach HR phases that
+  // have not yet accumulated a direct temporal sample. Moments modulate the
+  // correction where available, but never suppress the inverse projection.
+  let solverSupport = mix(0.42, 1.0, observationConfidence);
+
   let residualRms = sqrt(max(gatheredResidual.a, 0.0));
-  let outlierProtection = 1.0 - smoothstep(0.12, 0.32, residualRms);
-  let observationSupport = mix(0.42, 1.0, clamp(latent.a, 0.0, 1.0));
-  let correctionRgb = clamp(
-    gatheredResidual.rgb,
-    vec3<f32>(-0.12),
-    vec3<f32>(0.12),
-  ) * correctionGain * outlierProtection * observationSupport;
-  let corrected = rgbToYCoCg(latent.rgb + correctionRgb);
+  let robustLimit = clamp(0.055 + sqrt(varianceLuma) * 0.6, 0.045, 0.12);
+  let robustWeight = min(1.0, robustLimit / max(residualRms, 0.0001));
+  let residualYCoCg = rgbToYCoCg(gatheredResidual.rgb);
+  let solverGain = correctionGain * solverSupport * robustWeight;
+  let correction = vec3<f32>(
+    clamp(residualYCoCg.x, -0.05, 0.05) * solverGain,
+    clamp(residualYCoCg.yz, vec2<f32>(-0.04), vec2<f32>(0.04))
+      * solverGain * 0.35,
+  );
+  let corrected = rgbToYCoCg(latent.rgb) + correction;
 
   // Projection onto a relaxed local color range prevents iterative ringing
   // while still allowing the residual to restore subpixel contrast.

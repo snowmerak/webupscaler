@@ -15,6 +15,8 @@ struct FrameUniforms {
 @group(0) @binding(4) var linearClamp: sampler;
 @group(0) @binding(5) var<uniform> uniforms: FrameUniforms;
 @group(0) @binding(6) var latentSeed: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(7) var momentsPrevious: texture_2d<f32>;
+@group(0) @binding(8) var momentsCurrent: texture_storage_2d<rgba16float, write>;
 
 fn luma(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -92,6 +94,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // History is a premultiplied observation accumulator:
   // RGB = observed radiance * weight, A = observation coverage.
   let sampledHistory = textureSampleLevel(historyPrevious, linearClamp, previousUv, 0.0);
+  let sampledMoments = textureSampleLevel(momentsPrevious, linearClamp, previousUv, 0.0);
   let sampledCoverage = max(sampledHistory.a, 0.0);
   let historyRadiance = sampledHistory.rgb / max(sampledCoverage, 0.0001);
   let clampedHistory = clampHistoryToCurrentNeighborhood(historyRadiance, sourceCenter);
@@ -122,27 +125,62 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let resetMask = select(1.0, 0.0, uniforms.flags.x > 0.5);
   let historyReliability = motion.z * photoTrust * coherence * matchingTrust
     * select(0.0, 1.0, inBounds) * resetMask;
-  let oldWeight = sampledCoverage * historyReliability * uniforms.thresholds.z;
+  let oldScale = historyReliability * uniforms.thresholds.z;
+  let oldWeight = sampledCoverage * oldScale;
+
+  // Preserve historical variance when neighborhood clamping moves the mean.
+  // Moments RGB = sum(w*x^2), A = sum(w^2).
+  let historySecondMoment = max(sampledMoments.rgb, vec3<f32>(0.0))
+    / max(sampledCoverage, 0.0001);
+  let historyVariance = max(
+    historySecondMoment - historyRadiance * historyRadiance,
+    vec3<f32>(0.0),
+  );
+  let clampedSecondMoment = historyVariance + clampedHistory * clampedHistory;
+  let oldSecondPremul = clampedSecondMoment * oldWeight;
+  let oldSquaredWeight = max(sampledMoments.a, 0.0) * oldScale * oldScale;
 
   let accumulatedPremul = observedRadiance * currentWeight
     + clampedHistory * oldWeight;
   let accumulatedWeight = currentWeight + oldWeight;
+  let accumulatedSecondPremul = observedRadiance * observedRadiance * currentWeight
+    + oldSecondPremul;
+  let accumulatedSquaredWeight = currentWeight * currentWeight + oldSquaredWeight;
   let temporalRadiance = accumulatedPremul / max(accumulatedWeight, 0.0001);
 
   // Cap the accumulator while preserving its radiance. This keeps alpha an
   // interpretable coverage value instead of an unbounded frame counter.
   let storedWeight = min(accumulatedWeight, 1.0);
-  let storedPremul = temporalRadiance * storedWeight;
+  let normalization = storedWeight / max(accumulatedWeight, 0.0001);
+  let storedPremul = accumulatedPremul * normalization;
+  let storedSecondPremul = accumulatedSecondPremul * normalization;
+  let storedSquaredWeight = accumulatedSquaredWeight * normalization * normalization;
   textureStore(
     historyCurrent,
     vec2<i32>(id.xy),
     vec4<f32>(storedPremul, storedWeight),
   );
+  textureStore(
+    momentsCurrent,
+    vec2<i32>(id.xy),
+    vec4<f32>(storedSecondPremul, storedSquaredWeight),
+  );
 
   // Keep inferred reconstruction separate from the observation accumulator.
   // RGB is a latent HR radiance seed; A remains real-observation coverage.
   let spatialSeed = textureSampleLevel(inputFrame, linearClamp, sourceUv, 0.0).rgb;
-  let latentConfidence = smoothstep(0.02, 0.85, storedWeight);
+  let storedSecondMoment = storedSecondPremul / max(storedWeight, 0.0001);
+  let observationVariance = max(
+    storedSecondMoment - temporalRadiance * temporalRadiance,
+    vec3<f32>(0.0),
+  );
+  let varianceLuma = dot(observationVariance, vec3<f32>(0.25, 0.5, 0.25));
+  let effectiveSamples = storedWeight * storedWeight
+    / max(storedSquaredWeight, 0.0001);
+  let coverageTrust = smoothstep(0.02, 0.85, storedWeight);
+  let varianceTrust = exp(-varianceLuma * 80.0);
+  let sampleTrust = clamp((effectiveSamples - 1.0) / 3.0, 0.0, 1.0);
+  let latentConfidence = coverageTrust * varianceTrust * mix(0.55, 1.0, sampleTrust);
   let seededRadiance = mix(spatialSeed, temporalRadiance, latentConfidence);
   textureStore(
     latentSeed,

@@ -81,9 +81,20 @@
           <span>영상 위에 성능 정보 표시</span>
         </label>
 
-        <label class="check-row" for="coverage-overlay">
-          <input id="coverage-overlay" type="checkbox" />
-          <span>HR coverage heatmap 표시</span>
+        <label class="field" for="diagnostic-view">
+          <span>
+            <strong>복원 진단</strong>
+            <small>관측과 solver 상태를 화면에 표시합니다.</small>
+          </span>
+          <select id="diagnostic-view">
+            <option value="off">끄기</option>
+            <option value="coverage">Coverage</option>
+            <option value="variance">Variance</option>
+            <option value="samples">Effective samples</option>
+            <option value="residual">Residual 전/후</option>
+            <option value="correction">Correction</option>
+            <option value="motion">Motion confidence</option>
+          </select>
         </label>
       </section>
 
