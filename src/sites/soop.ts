@@ -3,6 +3,7 @@ import { isUsableVideo } from './adapter'
 
 export class SoopAdapter implements SiteAdapter {
   readonly id = 'soop' as const
+  readonly playerLabel = 'SOOP LivePlayer'
 
   matches(url: URL): boolean {
     return url.hostname === 'play.sooplive.com'
@@ -36,4 +37,3 @@ export class SoopAdapter implements SiteAdapter {
       ?? document.body
   }
 }
-

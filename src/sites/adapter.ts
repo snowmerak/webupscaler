@@ -1,5 +1,9 @@
+import type { SupportedSiteAdapter } from '../shared/status'
+
 export interface SiteAdapter {
-  readonly id: 'soop'
+  readonly id: SupportedSiteAdapter
+  readonly playerLabel: string
+  readonly navigationEvents?: readonly string[]
   matches(url: URL): boolean
   findVideos(root: ParentNode): HTMLVideoElement[]
   getOverlayHost(video: HTMLVideoElement): HTMLElement
@@ -16,4 +20,3 @@ export function isUsableVideo(video: HTMLVideoElement): boolean {
     && rect.width > 0
     && rect.height > 0
 }
-

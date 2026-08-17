@@ -24,6 +24,7 @@ const controls = {
   diagnosticView: required<HTMLSelectElement>('#diagnostic-view'),
 }
 const view = {
+  siteLabel: required<HTMLElement>('#site-label'),
   badge: required<HTMLSpanElement>('#state-badge'),
   dot: required<HTMLSpanElement>('#status-dot'),
   title: required<HTMLElement>('#status-title'),
@@ -55,6 +56,11 @@ function stateLabel(runtime: RuntimeStatus) {
 
 function render() {
   const [badge, title, tone] = stateLabel(status)
+  view.siteLabel.textContent = status.adapter === 'youtube'
+    ? 'YOUTUBE · WEBGPU'
+    : status.adapter === 'soop'
+      ? 'SOOP · WEBGPU'
+      : 'VIDEO · WEBGPU'
   view.badge.textContent = badge
   view.badge.dataset.tone = tone
   view.dot.dataset.tone = tone
@@ -94,7 +100,7 @@ async function update(message: ExtensionMessage) {
       enabled: settings.enabled,
       supportedSite: true,
       adapter: 'soop',
-      message: settings.enabled ? 'SOOP LivePlayer를 기다리는 중입니다.' : '현재 사이트에서 꺼져 있습니다.',
+      message: settings.enabled ? '영상 플레이어를 기다리는 중입니다.' : '현재 사이트에서 꺼져 있습니다.',
     }
     render()
     return
@@ -139,8 +145,8 @@ function showError(error: unknown) {
   status = {
     state: 'error',
     enabled: settings.enabled,
-    supportedSite: true,
-    adapter: 'soop',
+    supportedSite: status.supportedSite,
+    adapter: status.adapter,
     message: error instanceof Error ? error.message : '요청을 적용하지 못했습니다.',
   }
   render()
@@ -154,7 +160,7 @@ async function initialize() {
       enabled: false,
       supportedSite: true,
       adapter: 'soop',
-      message: '미리보기 모드 — SOOP 탭에서 확장을 열면 실제 상태가 표시됩니다.',
+      message: '미리보기 모드 — 지원되는 영상 탭에서 확장을 열면 실제 상태가 표시됩니다.',
     }
     render()
     return
@@ -167,7 +173,7 @@ async function initialize() {
   } catch {
     status = {
       ...INITIAL_STATUS,
-      message: '연결되지 않았습니다. 확장을 새로고침한 뒤 SOOP 방송 탭도 새로고침해 주세요.',
+      message: '연결되지 않았습니다. 확장을 새로고침한 뒤 영상 탭도 새로고침해 주세요.',
     }
   }
   render()

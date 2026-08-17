@@ -7,6 +7,8 @@ export type RuntimeState =
   | 'recovering'
   | 'error'
 
+export type SupportedSiteAdapter = 'soop' | 'youtube'
+
 export type BypassReason =
   | 'source-large-enough'
   | 'pixel-budget-exceeded'
@@ -33,7 +35,7 @@ export interface RuntimeStatus {
   state: RuntimeState
   enabled: boolean
   supportedSite: boolean
-  adapter: 'soop' | 'unsupported'
+  adapter: SupportedSiteAdapter | 'unsupported'
   message: string
   bypassReason?: BypassReason
   errorCode?: string

@@ -35,13 +35,18 @@ export class UpscalerController {
       enabled: this.settings.enabled,
       supportedSite: true,
       adapter: options.adapter.id,
-      message: this.settings.enabled ? 'SOOP 영상을 찾는 중입니다.' : '현재 사이트에서 꺼져 있습니다.',
+      message: this.settings.enabled
+        ? `${options.adapter.playerLabel}를 찾는 중입니다.`
+        : '현재 사이트에서 꺼져 있습니다.',
     }
   }
 
   start() {
     this.observer = new MutationObserver(() => this.syncVideo())
     this.observer.observe(document.documentElement, { childList: true, subtree: true })
+    for (const eventName of this.options.adapter.navigationEvents ?? []) {
+      document.addEventListener(eventName, this.handleNavigation)
+    }
     this.urlTimer = window.setInterval(() => {
       if (location.href !== this.lastUrl) {
         this.lastUrl = location.href
@@ -90,7 +95,7 @@ export class UpscalerController {
         enabled: true,
         supportedSite: true,
         adapter: this.options.adapter.id,
-        message: 'SOOP LivePlayer를 기다리는 중입니다.',
+        message: `${this.options.adapter.playerLabel}를 기다리는 중입니다.`,
       }, true)
       return
     }
@@ -108,7 +113,7 @@ export class UpscalerController {
       enabled: true,
       supportedSite: true,
       adapter: this.options.adapter.id,
-      message: 'LivePlayer의 첫 프레임을 기다리는 중입니다.',
+      message: `${this.options.adapter.playerLabel}의 첫 프레임을 기다리는 중입니다.`,
     }, true)
     candidate.addEventListener('loadeddata', this.handleVideoReady, { once: true })
     candidate.addEventListener('resize', this.handleVideoReset)
@@ -118,6 +123,11 @@ export class UpscalerController {
 
   private readonly handleVideoReady = () => {
     if (this.video) this.attachVideo(this.video)
+  }
+
+  private readonly handleNavigation = () => {
+    this.lastUrl = location.href
+    this.syncVideo(true)
   }
 
   private readonly handleVideoReset = () => {
@@ -303,6 +313,9 @@ export class UpscalerController {
   destroy() {
     this.observer?.disconnect()
     if (this.urlTimer !== null) clearInterval(this.urlTimer)
+    for (const eventName of this.options.adapter.navigationEvents ?? []) {
+      document.removeEventListener(eventName, this.handleNavigation)
+    }
     this.stopSession()
   }
 }
