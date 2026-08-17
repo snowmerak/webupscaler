@@ -52,6 +52,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let sourceCoordinate = vec2<f32>(id.xy) / scale;
   let sourceUv = (sourceCoordinate + vec2<f32>(0.5)) * uniforms.inputSize.zw;
   let residualTexel = uniforms.inputSize.zw;
+  let phaseOffset = sourceCoordinate - round(sourceCoordinate);
+  let exactTwoX = all(abs(scale - vec2<f32>(2.0)) < vec2<f32>(0.001));
+  let alignedSample = all(abs(phaseOffset) < vec2<f32>(0.001));
+  let hardObservation = select(0.0, 1.0, alignedSample);
+  let softObservation = exp(-16.0 * dot(phaseOffset, phaseOffset));
+  let directObservation = select(softObservation, hardObservation, exactTwoX);
+  let missingPhase = 1.0 - clamp(directObservation, 0.0, 1.0);
 
   // Approximate the transpose of the LR pixel-response filter. The residual
   // is distributed over the HR footprint with a compact, normalized kernel.
@@ -91,7 +98,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // have not yet accumulated a direct temporal sample. Moments modulate the
   // correction where available, but never suppress the inverse projection.
   let reactiveMask = clamp(latent.a, 0.0, 1.0);
-  let solverSupport = mix(0.42, 1.0, observationConfidence)
+  let solverSupport = mix(0.48, 1.0, observationConfidence)
+    * mix(0.72, 1.28, missingPhase)
     * mix(1.0, 0.25, reactiveMask);
 
   let residualRms = sqrt(max(gatheredResidual.a, 0.0));
@@ -119,11 +127,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
   let expansion = vec3<f32>(0.035, 0.045, 0.045);
   let regularized = clamp(corrected, minimum - expansion, maximum + expansion);
+  let observationConstraint = directObservation
+    * varianceTrust
+    * mix(0.75, 1.0, sampleTrust)
+    * (1.0 - reactiveMask);
+  let constrained = mix(
+    regularized,
+    rgbToYCoCg(observationMean),
+    observationConstraint * 0.55,
+  );
   textureStore(
     latentOutput,
     position,
     vec4<f32>(
-      clamp(yCoCgToRgb(regularized), vec3<f32>(0.0), vec3<f32>(1.0)),
+      clamp(yCoCgToRgb(constrained), vec3<f32>(0.0), vec3<f32>(1.0)),
       reactiveMask,
     ),
   );

@@ -17,6 +17,12 @@ struct FrameUniforms {
 @group(0) @binding(6) var latentSeed: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(7) var momentsPrevious: texture_2d<f32>;
 @group(0) @binding(8) var momentsCurrent: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(9) var latentPrevious: texture_2d<f32>;
+
+struct NeighborhoodRange {
+  minimum: vec3<f32>,
+  maximum: vec3<f32>,
+}
 
 fn luma(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -43,10 +49,7 @@ fn loadInput(position: vec2<i32>) -> vec3<f32> {
   return textureLoad(inputFrame, clamp(position, vec2<i32>(0), maximum), 0).rgb;
 }
 
-fn clampHistoryToCurrentNeighborhood(
-  historyRadiance: vec3<f32>,
-  sourceCenter: vec2<i32>,
-) -> vec3<f32> {
+fn currentNeighborhoodRange(sourceCenter: vec2<i32>) -> NeighborhoodRange {
   var minimum = vec3<f32>(1000.0);
   var maximum = vec3<f32>(-1000.0);
   for (var y = -1; y <= 1; y += 1) {
@@ -57,8 +60,19 @@ fn clampHistoryToCurrentNeighborhood(
     }
   }
 
+  return NeighborhoodRange(minimum, maximum);
+}
+
+fn clampToCurrentNeighborhood(
+  radiance: vec3<f32>,
+  neighborhood: NeighborhoodRange,
+) -> vec3<f32> {
   let expansion = vec3<f32>(0.025, 0.035, 0.035);
-  let clamped = clamp(rgbToYCoCg(historyRadiance), minimum - expansion, maximum + expansion);
+  let clamped = clamp(
+    rgbToYCoCg(radiance),
+    neighborhood.minimum - expansion,
+    neighborhood.maximum + expansion,
+  );
   return clamp(yCoCgToRgb(clamped), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
@@ -95,13 +109,21 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // RGB = observed radiance * weight, A = observation coverage.
   let sampledHistory = textureSampleLevel(historyPrevious, linearClamp, previousUv, 0.0);
   let sampledMoments = textureSampleLevel(momentsPrevious, linearClamp, previousUv, 0.0);
+  let sampledPriorLatent = textureSampleLevel(latentPrevious, linearClamp, previousUv, 0.0);
   let sampledCoverage = max(sampledHistory.a, 0.0);
   let historyRadiance = sampledHistory.rgb / max(sampledCoverage, 0.0001);
-  let clampedHistory = clampHistoryToCurrentNeighborhood(historyRadiance, sourceCenter);
+  let neighborhood = currentNeighborhoodRange(sourceCenter);
+  let clampedHistory = clampToCurrentNeighborhood(historyRadiance, neighborhood);
+  let clampedPriorLatent = clampToCurrentNeighborhood(
+    sampledPriorLatent.rgb,
+    neighborhood,
+  );
 
   let spatialProbe = textureSampleLevel(inputFrame, linearClamp, sourceUv, 0.0).rgb;
   let photoError = abs(luma(spatialProbe) - luma(clampedHistory));
   let photoTrust = 1.0 - smoothstep(0.035, 0.16, photoError);
+  let priorPhotoError = abs(luma(spatialProbe) - luma(clampedPriorLatent));
+  let priorPhotoTrust = 1.0 - smoothstep(0.045, 0.2, priorPhotoError);
 
   // Detect abrupt content changes against the unclamped history. The normal
   // neighborhood clamp can make an old subtitle edge look locally plausible,
@@ -210,7 +232,36 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let varianceTrust = exp(-varianceLuma * 80.0);
   let sampleTrust = clamp((effectiveSamples - 1.0) / 3.0, 0.0, 1.0);
   let latentConfidence = coverageTrust * varianceTrust * mix(0.55, 1.0, sampleTrust);
-  let seededRadiance = mix(spatialSeed, temporalRadiance, latentConfidence);
+  let observationSeed = mix(spatialSeed, temporalRadiance, latentConfidence);
+
+  // Reproject the previous solved latent as a persistent optimization state.
+  // Actual observations remain authoritative; the inferred prior is strongest
+  // only on phases that are still unsupported by real temporal samples.
+  let priorReactive = clamp(sampledPriorLatent.a, 0.0, 1.0);
+  let priorTrust = motion.z
+    * coherence
+    * matchingTrust
+    * priorPhotoTrust
+    * select(0.0, 1.0, inBounds)
+    * resetMask
+    * reactiveTrust * reactiveTrust
+    * mix(1.0, 0.1, priorReactive);
+  let directObservation = clamp(currentWeight, 0.0, 1.0);
+  let missingPhase = 1.0 - directObservation;
+  let unresolvedPhase = 1.0 - latentConfidence;
+  let persistentBlend = priorTrust
+    * mix(0.12, 0.82, missingPhase)
+    * mix(0.25, 1.0, unresolvedPhase);
+  let persistentSeed = mix(observationSeed, clampedPriorLatent, persistentBlend);
+  let observationConstraint = directObservation
+    * varianceTrust
+    * mix(0.75, 1.0, sampleTrust)
+    * reactiveTrust;
+  let seededRadiance = mix(
+    persistentSeed,
+    temporalRadiance,
+    observationConstraint * 0.88,
+  );
   textureStore(
     latentSeed,
     vec2<i32>(id.xy),

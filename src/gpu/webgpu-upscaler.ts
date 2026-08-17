@@ -201,7 +201,7 @@ export class WebGpuUpscaler {
       compute: {
         module: backprojectModule,
         entryPoint: 'main',
-        constants: { correctionGain: 0.28 },
+        constants: { correctionGain: 0.34 },
       },
     })
     this.backprojectRefinedPipeline = await this.device.createComputePipelineAsync({
@@ -210,7 +210,7 @@ export class WebGpuUpscaler {
       compute: {
         module: backprojectModule,
         entryPoint: 'main',
-        constants: { correctionGain: 0.18 },
+        constants: { correctionGain: 0.24 },
       },
     })
     this.compositePipeline = await this.device.createRenderPipelineAsync({
@@ -415,6 +415,7 @@ export class WebGpuUpscaler {
           { binding: 6, resource: latentSeed[current].createView() },
           { binding: 7, resource: historyMoments[previous].createView() },
           { binding: 8, resource: historyMoments[current].createView() },
+          { binding: 9, resource: latent[previous].createView() },
         ],
       })
     })
