@@ -1,7 +1,7 @@
 export const SETTINGS_KEY = 'upscalerSettings'
 
 export type UpscalerMode = 'auto' | 'balanced' | 'eco'
-export type DiagnosticView = 'off' | 'coverage' | 'variance' | 'samples' | 'residual' | 'correction' | 'motion'
+export type DiagnosticView = 'off' | 'coverage' | 'variance' | 'samples' | 'residual' | 'correction' | 'motion' | 'reactive'
 
 export interface BaseUpscalerSettings {
   enabled: boolean
@@ -40,6 +40,7 @@ function isDiagnosticView(value: unknown): value is DiagnosticView {
     || value === 'residual'
     || value === 'correction'
     || value === 'motion'
+    || value === 'reactive'
 }
 
 export function normalizeSettings(value: unknown): UpscalerSettings {

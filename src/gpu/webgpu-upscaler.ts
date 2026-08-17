@@ -580,6 +580,7 @@ export class WebGpuUpscaler {
       residual: 4,
       correction: 5,
       motion: 6,
+      reactive: 7,
     }[settings.diagnosticView]
     this.requireDevice().queue.writeBuffer(this.requireUniformBuffer(), 0, data)
   }

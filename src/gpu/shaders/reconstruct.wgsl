@@ -103,6 +103,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let photoError = abs(luma(spatialProbe) - luma(clampedHistory));
   let photoTrust = 1.0 - smoothstep(0.035, 0.16, photoError);
 
+  // Detect abrupt content changes against the unclamped history. The normal
+  // neighborhood clamp can make an old subtitle edge look locally plausible,
+  // so it must not be used for the reactive decision. These thresholds are
+  // deliberately tolerant of 540p compression noise and film grain.
+  let rawColorDelta = abs(
+    rgbToYCoCg(spatialProbe) - rgbToYCoCg(historyRadiance)
+  );
+  let reactiveColorError = max(
+    rawColorDelta.x,
+    max(rawColorDelta.y, rawColorDelta.z) * 0.8,
+  );
+  let colorReactive = smoothstep(0.055, 0.18, reactiveColorError)
+    * mix(0.2, 1.0, clamp(currentWeight, 0.0, 1.0));
+
   let motionTexel = uniforms.motionSize.zw;
   let leftMotion = textureSampleLevel(
     motionMetaCurrent, linearClamp, sourceUv - vec2<f32>(motionTexel.x, 0.0), 0.0
@@ -123,8 +137,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let coherence = exp(-motionDifference * 0.18);
   let matchingTrust = 1.0 - motion.w;
   let resetMask = select(1.0, 0.0, uniforms.flags.x > 0.5);
+  let historyPresent = smoothstep(0.02, 0.15, sampledCoverage)
+    * select(0.0, 1.0, inBounds)
+    * resetMask;
+  let motionReactive = max(
+    smoothstep(0.35, 0.85, motion.w),
+    smoothstep(1.5, 7.0, motionDifference) * 0.55,
+  );
+  let reactiveMask = clamp(
+    max(colorReactive, motionReactive * 0.65) * historyPresent,
+    0.0,
+    1.0,
+  );
+  let reactiveTrust = 1.0 - reactiveMask;
   let historyReliability = motion.z * photoTrust * coherence * matchingTrust
-    * select(0.0, 1.0, inBounds) * resetMask;
+    * select(0.0, 1.0, inBounds) * resetMask
+    * reactiveTrust * reactiveTrust;
   let oldScale = historyReliability * uniforms.thresholds.z;
   let oldWeight = sampledCoverage * oldScale;
 
@@ -167,7 +195,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   );
 
   // Keep inferred reconstruction separate from the observation accumulator.
-  // RGB is a latent HR radiance seed; A remains real-observation coverage.
+  // RGB is a latent HR radiance seed. Alpha carries the transient reactive
+  // mask through the IBP stages without allocating another full HR texture.
   let spatialSeed = textureSampleLevel(inputFrame, linearClamp, sourceUv, 0.0).rgb;
   let storedSecondMoment = storedSecondPremul / max(storedWeight, 0.0001);
   let observationVariance = max(
@@ -185,6 +214,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   textureStore(
     latentSeed,
     vec2<i32>(id.xy),
-    vec4<f32>(seededRadiance, storedWeight),
+    vec4<f32>(seededRadiance, reactiveMask),
   );
 }

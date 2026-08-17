@@ -61,6 +61,7 @@ const diagnosticViews: Array<{ value: DiagnosticView; label: string }> = [
   { value: 'residual', label: '복원 진단: Residual' },
   { value: 'correction', label: '복원 진단: Correction' },
   { value: 'motion', label: '복원 진단: Motion' },
+  { value: 'reactive', label: '복원 진단: Reactive' },
 ]
 let diagnosticViewIndex = 0
 
@@ -126,6 +127,19 @@ function draw(now: number) {
   context.fillStyle = 'rgba(255,255,255,.65)'
   context.font = '14px ui-monospace, monospace'
   context.fillText('synthetic subpixel motion · WebGPU', 31, 78)
+
+  // Abrupt, fixed-position overlay changes exercise the reactive mask path
+  // without conflating it with camera motion.
+  const overlayLabels = ['LIVE 100', 'LIVE 250', 'SCENE READY']
+  const overlayLabel = overlayLabels[Math.floor(elapsed * 1.5) % overlayLabels.length]
+  context.fillStyle = 'rgba(18, 14, 34, .92)'
+  context.fillRect(width - 176, 26, 148, 42)
+  context.strokeStyle = '#ff6faf'
+  context.lineWidth = 2
+  context.strokeRect(width - 176, 26, 148, 42)
+  context.fillStyle = '#fff1f7'
+  context.font = '700 16px ui-monospace, monospace'
+  context.fillText(overlayLabel, width - 164, 52)
 
   if (running) animationFrame = requestAnimationFrame(draw)
 }

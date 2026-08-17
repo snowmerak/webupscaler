@@ -187,8 +187,15 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     vec2<f32>(0.000001),
   );
   var latent = textureSample(latentReconstruction, linearClamp, input.uv);
+  let reactiveMask = clamp(latent.a, 0.0, 1.0);
   if (all(uniforms.outputSize.xy > presentationSize * 1.02)) {
-    latent = vec4<f32>(lanczos2Resolve(input.uv), latent.a);
+    let lanczos = lanczos2Resolve(input.uv);
+    // Changed overlays and disocclusions use the non-ringing linear resolve.
+    // Bilinear mask sampling also gives a small, free guard band at edges.
+    latent = vec4<f32>(
+      mix(lanczos, latent.rgb, smoothstep(0.08, 0.72, reactiveMask)),
+      reactiveMask,
+    );
   }
   let accumulator = textureSampleLevel(observationAccumulator, linearClamp, input.uv, 0.0);
   let moments = textureSampleLevel(observationMoments, linearClamp, input.uv, 0.0);
@@ -206,6 +213,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let reconstructionConfidence = coverageTrust
     * varianceTrust
     * mix(0.55, 1.0, sampleTrust);
+  let stableReconstructionConfidence = reconstructionConfidence
+    * mix(1.0, 0.15, reactiveMask);
 
   let diagnosticView = i32(round(uniforms.flags.w));
   if (diagnosticView == 1) {
@@ -241,11 +250,14 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
       1.0,
     );
   }
+  if (diagnosticView == 7) {
+    return vec4<f32>(scalarHeat(reactiveMask), 1.0);
+  }
 
   // RGB is the observation-seeded latent HR estimate after two residual
-  // back-projection iterations. Alpha remains real-observation coverage.
+  // back-projection iterations. Alpha carries the transient reactive mask.
   let temporalRadiance = latent.rgb;
-  let resolved = mix(spatial, temporalRadiance, reconstructionConfidence);
+  let resolved = mix(spatial, temporalRadiance, stableReconstructionConfidence);
 
   // Deblocking now happens on the source before motion analysis and temporal
   // accumulation. Composite only applies a small final-detail recovery.
@@ -259,6 +271,6 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let edgeMagnitude = max(max(abs(detail.r), abs(detail.g)), abs(detail.b));
   let edgeMask = 1.0 - smoothstep(0.08, 0.3, edgeMagnitude);
   let sharpened = resolved + detail * uniforms.thresholds.x * edgeMask
-    * reconstructionConfidence;
+    * stableReconstructionConfidence;
   return vec4<f32>(clamp(sharpened, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }

@@ -90,7 +90,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // LR residual is itself a real observation and must reach HR phases that
   // have not yet accumulated a direct temporal sample. Moments modulate the
   // correction where available, but never suppress the inverse projection.
-  let solverSupport = mix(0.42, 1.0, observationConfidence);
+  let reactiveMask = clamp(latent.a, 0.0, 1.0);
+  let solverSupport = mix(0.42, 1.0, observationConfidence)
+    * mix(1.0, 0.25, reactiveMask);
 
   let residualRms = sqrt(max(gatheredResidual.a, 0.0));
   let robustLimit = clamp(0.055 + sqrt(varianceLuma) * 0.6, 0.045, 0.12);
@@ -122,7 +124,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     position,
     vec4<f32>(
       clamp(yCoCgToRgb(regularized), vec3<f32>(0.0), vec3<f32>(1.0)),
-      latent.a,
+      reactiveMask,
     ),
   );
 }
