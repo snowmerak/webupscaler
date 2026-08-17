@@ -18,11 +18,12 @@ export interface RuntimeMetrics {
   sourceHeight: number
   outputWidth: number
   outputHeight: number
-  completionMs: number
-  completionP90Ms: number
+  gpuQueueMs: number
+  gpuQueueP90Ms: number
   processedFrames: number
   skippedFrames: number
   historyResets: number
+  pendingSubmissions: number
 }
 
 export interface RuntimeStatus {

@@ -5,11 +5,15 @@ export class MetricsTracker {
   private processedFrames = 0
   private skippedFrames = 0
   private historyResets = 0
+  private pendingSubmissions = 0
 
-  recordCompletion(value: number) {
+  recordSubmitted(gpuQueueMs: number | null, pendingSubmissions: number) {
     this.processedFrames += 1
-    this.samples.push(value)
-    if (this.samples.length > 120) this.samples.shift()
+    this.pendingSubmissions = pendingSubmissions
+    if (gpuQueueMs !== null) {
+      this.samples.push(gpuQueueMs)
+      if (this.samples.length > 120) this.samples.shift()
+    }
   }
 
   recordSkipped() {
@@ -30,11 +34,12 @@ export class MetricsTracker {
       sourceHeight,
       outputWidth,
       outputHeight,
-      completionMs: latest,
-      completionP90Ms: sorted[p90Index] ?? latest,
+      gpuQueueMs: latest,
+      gpuQueueP90Ms: sorted[p90Index] ?? latest,
       processedFrames: this.processedFrames,
       skippedFrames: this.skippedFrames,
       historyResets: this.historyResets,
+      pendingSubmissions: this.pendingSubmissions,
     }
   }
 }

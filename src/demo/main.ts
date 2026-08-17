@@ -39,6 +39,7 @@ let animationStartedAt = performance.now()
 let running = true
 let inFlight = false
 let processed = 0
+let lastGpuQueueMs: number | null = null
 
 function draw(now: number) {
   const elapsed = (now - animationStartedAt) / 1000
@@ -92,10 +93,13 @@ async function processFrame() {
       mediaTime: video.currentTime,
       skippedFrames: 0,
     })
+    if (result === null) return
     processed += 1
+    if (result.gpuQueueMs !== null) lastGpuQueueMs = result.gpuQueueMs
     status.textContent = '실행 중'
     status.dataset.tone = 'running'
-    metrics.textContent = `처리 ${processed.toLocaleString()} 프레임 · 완료 지연 ${result.completionMs.toFixed(1)} ms${result.historyReset ? ' · history reset' : ''}`
+    const gpuTime = lastGpuQueueMs === null ? '측정 대기' : `${lastGpuQueueMs.toFixed(1)} ms`
+    metrics.textContent = `처리 ${processed.toLocaleString()} 프레임 · GPU queue ${gpuTime} · pending ${result.pendingSubmissions}/2${result.historyReset ? ' · history reset' : ''}`
   } catch (error) {
     status.textContent = '실행 오류'
     status.dataset.tone = 'error'

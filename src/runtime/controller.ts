@@ -181,10 +181,15 @@ export class UpscalerController {
       skippedFrames: this.skippedSinceLastFrame,
     })
     if (result === undefined) return
+    if (result === null) {
+      this.metrics.recordSkipped()
+      this.skippedSinceLastFrame += 1
+      return
+    }
     this.skippedSinceLastFrame = 0
     if (result.historyReset) this.metrics.recordHistoryReset()
 
-    this.metrics.recordCompletion(result.completionMs)
+    this.metrics.recordSubmitted(result.gpuQueueMs, result.pendingSubmissions)
     this.overlay?.show()
     this.overlay?.layout()
     const metrics = this.metrics.snapshot(
@@ -212,7 +217,8 @@ export class UpscalerController {
           `Source ${metrics.sourceWidth}×${metrics.sourceHeight}`,
           `Output ${metrics.outputWidth}×${metrics.outputHeight}`,
           `Mode ${this.settings.mode}`,
-          `Completion ${metrics.completionMs.toFixed(1)} ms / p90 ${metrics.completionP90Ms.toFixed(1)} ms`,
+          `GPU queue ${metrics.gpuQueueMs.toFixed(1)} ms / p90 ${metrics.gpuQueueP90Ms.toFixed(1)} ms`,
+          `Pending ${metrics.pendingSubmissions}/2`,
           `Skipped ${metrics.skippedFrames}`,
           `History resets ${metrics.historyResets}`,
         ].join('\n')

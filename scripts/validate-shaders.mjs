@@ -5,7 +5,7 @@ import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js'
 const shaders = [
   { file: 'analyze.wgsl', compute: ['main'], bindings: 4 },
   { file: 'motion.wgsl', compute: ['main'], bindings: 8 },
-  { file: 'reconstruct.wgsl', compute: ['main'], bindings: 8 },
+  { file: 'reconstruct.wgsl', compute: ['main'], bindings: 7 },
   { file: 'composite.wgsl', vertex: ['vertexMain'], fragment: ['fragmentMain'], bindings: 3 },
 ]
 
@@ -39,4 +39,3 @@ for (const expectation of shaders) {
 
   console.log(`✓ ${expectation.file}: ${bindingCount} bindings`)
 }
-

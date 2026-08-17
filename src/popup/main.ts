@@ -73,7 +73,7 @@ function render() {
     view.metrics.hidden = false
     view.sourceSize.textContent = `${status.metrics.sourceWidth}×${status.metrics.sourceHeight}`
     view.outputSize.textContent = `${status.metrics.outputWidth}×${status.metrics.outputHeight}`
-    view.frameTime.textContent = `${status.metrics.completionP90Ms.toFixed(1)} ms`
+    view.frameTime.textContent = `${status.metrics.gpuQueueP90Ms.toFixed(1)} ms`
   } else {
     view.metrics.hidden = true
   }
@@ -156,4 +156,3 @@ async function initialize() {
 }
 
 void initialize()
-

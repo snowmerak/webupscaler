@@ -27,14 +27,23 @@ const PATCH = array<vec2<f32>, 13>(
   vec2<f32>(0.0, -1.75), vec2<f32>(0.0, 1.75),
 );
 
+const REFINE_CROSS = array<vec2<f32>, 5>(
+  vec2<f32>(0.0, 0.0),
+  vec2<f32>(-1.0, 0.0), vec2<f32>(1.0, 0.0),
+  vec2<f32>(0.0, -1.0), vec2<f32>(0.0, 1.0),
+);
+
+// Private address space is per shader invocation. Keeping the invariant side
+// of the patch comparison here avoids re-fetching it for every candidate.
+var<private> currentPatch: array<f32, 13>;
+
 fn candidateScore(centerUv: vec2<f32>, displacement: vec2<f32>) -> f32 {
   var score = 0.0;
   let displacementUv = displacement * uniforms.inputSize.zw;
   for (var index = 0u; index < 13u; index += 1u) {
     let patchUv = PATCH[index] * uniforms.analysisSize.zw;
-    let currentLuma = textureSampleLevel(featureCurrent, linearClamp, centerUv + patchUv, 0.0).r;
     let previousLuma = textureSampleLevel(featurePrevious, linearClamp, centerUv + patchUv + displacementUv, 0.0).r;
-    score += min(abs(currentLuma - previousLuma), 0.25);
+    score += min(abs(currentPatch[index] - previousLuma), 0.25);
   }
   return score / 13.0;
 }
@@ -60,6 +69,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let motionUv = (vec2<f32>(id.xy) + vec2<f32>(0.5)) * uniforms.motionSize.zw;
   let analysisCenter = vec2<f32>(id.xy) * 4.0 + vec2<f32>(2.0);
   let centerUv = analysisCenter * uniforms.analysisSize.zw;
+  for (var index = 0u; index < 13u; index += 1u) {
+    let patchUv = PATCH[index] * uniforms.analysisSize.zw;
+    currentPatch[index] = textureSampleLevel(
+      featureCurrent,
+      linearClamp,
+      centerUv + patchUv,
+      0.0,
+    ).r;
+  }
+
   let previousState = textureSampleLevel(motionStatePrevious, linearClamp, motionUv, 0.0);
   let previousMeta = textureSampleLevel(motionMetaPrevious, linearClamp, motionUv, 0.0);
   let dt = max(uniforms.timeScale.x, 0.0001);
@@ -75,7 +94,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
   for (var y = -3; y <= 3; y += 1) {
     for (var x = -3; x <= 3; x += 1) {
-      if (abs(x) > searchRadius || abs(y) > searchRadius) {
+      if (abs(x) + abs(y) > searchRadius) {
         continue;
       }
       let candidate = predicted + vec2<f32>(f32(x), f32(y)) * 4.0;
@@ -95,14 +114,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   var refinementStep = 2.0;
   for (var level = 0u; level < 3u; level += 1u) {
     let refinementCenter = bestOffset;
-    for (var y = -1; y <= 1; y += 1) {
-      for (var x = -1; x <= 1; x += 1) {
-        let candidate = refinementCenter + vec2<f32>(f32(x), f32(y)) * refinementStep;
-        let score = candidateScore(centerUv, candidate);
-        if (score < bestScore) {
-          bestScore = score;
-          bestOffset = candidate;
-        }
+    for (var index = 0u; index < 5u; index += 1u) {
+      let candidate = refinementCenter + REFINE_CROSS[index] * refinementStep;
+      let score = candidateScore(centerUv, candidate);
+      if (score < bestScore) {
+        bestScore = score;
+        bestOffset = candidate;
       }
     }
     refinementStep *= 0.5;
@@ -136,4 +153,3 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   textureStore(motionStateCurrent, vec2<i32>(id.xy), vec4<f32>(velocity, acceleration));
   textureStore(motionMetaCurrent, vec2<i32>(id.xy), vec4<f32>(bestOffset, confidence, normalizedError));
 }
-

@@ -8,8 +8,9 @@ SOOP `video#livePlayer`를 감지하고 WebGPU로 실시간 temporal 업스케�
 HTMLVideoElement
   → copyExternalImageToTexture (프레임당 1회)
   → 1/4 해상도 feature 분석
-  → 저해상도 motion 추정 (속도/가속도 예측)
-  → history 재투영 및 신뢰도 기반 temporal 복원
+  → current patch 캐시 기반 diamond motion 추정 (속도/가속도 예측)
+  → LR 관측 표본을 2× HR phase lattice에 배치
+  → RGBA16F radiance/coverage history 재투영 및 temporal 복원
   → 방향성 공간 복원과 결합
   → 선택적 5-tap light sharpen
   → WebGPU canvas
@@ -58,4 +59,4 @@ src/
 
 ## 현재 범위
 
-이번 버전은 SOOP-first 기반, 저해상도 motion estimation, ping-pong history accumulation, 장면 전환/탐색 시 history reset을 구현합니다. Auto 모드의 장치별 자동 튜닝과 실제 방송별 화질·성능 프로파일링은 후속 범위입니다.
+이번 버전은 SOOP-first 기반, 가속도 예측 motion estimation, LR 관측 위치에 기반한 HR radiance/coverage 누적, 장면 전환/탐색 시 history reset을 구현합니다. GPU submit은 최대 2개만 pending으로 유지하며 GPU queue 시간은 저빈도로 표본 측정합니다. Auto 모드의 장치별 자동 튜닝과 실제 방송별 화질·성능 프로파일링은 후속 범위입니다.

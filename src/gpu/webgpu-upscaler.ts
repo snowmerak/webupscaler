@@ -13,8 +13,9 @@ export interface FrameTiming {
 }
 
 export interface ProcessResult {
-  completionMs: number
+  gpuQueueMs: number | null
   historyReset: boolean
+  pendingSubmissions: number
 }
 
 interface GpuResources {
@@ -56,6 +57,8 @@ export class ShaderCompilationError extends Error {
 }
 
 export class WebGpuUpscaler {
+  private static readonly MAX_PENDING_SUBMISSIONS = 2
+  private static readonly GPU_SAMPLE_BATCH_INTERVAL = 8
   private adapter: GPUAdapter | null = null
   private device: GPUDevice | null = null
   private context: GPUCanvasContext | null = null
@@ -74,6 +77,10 @@ export class WebGpuUpscaler {
   private lastMediaTime: number | null = null
   private previousDt = 1 / 60
   private resetNextFrame = true
+  private pendingSubmissions = 0
+  private submissionBatchIndex = 0
+  private batchFence: Promise<void> | null = null
+  private completedGpuSampleMs: number | null = null
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -233,9 +240,9 @@ export class WebGpuUpscaler {
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }))
     const history = this.pair((index) => device.createTexture({
-      label: `Temporal history ${index}`,
+      label: `HR radiance and observation coverage ${index}`,
       size: [target.width, target.height],
-      format: 'rgba8unorm',
+      format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }))
     const sampler = this.requireSampler()
@@ -280,11 +287,10 @@ export class WebGpuUpscaler {
           { binding: 0, resource: input.createView() },
           { binding: 1, resource: features[current].createView() },
           { binding: 2, resource: motionMeta[current].createView() },
-          { binding: 3, resource: motionMeta[previous].createView() },
-          { binding: 4, resource: history[previous].createView() },
-          { binding: 5, resource: history[current].createView() },
-          { binding: 6, resource: sampler },
-          { binding: 7, resource: { buffer: uniformBuffer } },
+          { binding: 3, resource: history[previous].createView() },
+          { binding: 4, resource: history[current].createView() },
+          { binding: 5, resource: sampler },
+          { binding: 6, resource: { buffer: uniformBuffer } },
         ],
       })
     })
@@ -369,15 +375,56 @@ export class WebGpuUpscaler {
     this.requireDevice().queue.writeBuffer(this.requireUniformBuffer(), 0, data)
   }
 
+  private closeSubmissionBatch(device: GPUDevice) {
+    const shouldSample = this.submissionBatchIndex
+      % WebGpuUpscaler.GPU_SAMPLE_BATCH_INTERVAL === 0
+    const submittedAt = shouldSample ? performance.now() : 0
+    this.submissionBatchIndex += 1
+    this.batchFence = device.queue.onSubmittedWorkDone()
+      .then(() => {
+        if (shouldSample && !this.disposed) {
+          this.completedGpuSampleMs = performance.now() - submittedAt
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.pendingSubmissions = 0
+        this.batchFence = null
+      })
+  }
+
+  private async drainPendingSubmissions(device: GPUDevice) {
+    if (this.pendingSubmissions === 0) return
+    if (this.batchFence) {
+      await this.batchFence
+      return
+    }
+    await device.queue.onSubmittedWorkDone()
+    this.pendingSubmissions = 0
+  }
+
   async process(
     video: HTMLVideoElement,
     target: OutputTarget,
     settings: BaseUpscalerSettings,
     frameTiming: FrameTiming,
-  ): Promise<ProcessResult> {
+  ): Promise<ProcessResult | null> {
     await this.initialize()
+    if (this.pendingSubmissions >= WebGpuUpscaler.MAX_PENDING_SUBMISSIONS) return null
+
     const device = this.requireDevice()
     const context = this.requireContext()
+    const existing = this.resources
+    const resourcesNeedRebuild = existing !== null && (
+      existing.inputWidth !== video.videoWidth
+      || existing.inputHeight !== video.videoHeight
+      || existing.outputWidth !== target.width
+      || existing.outputHeight !== target.height
+    )
+    if (resourcesNeedRebuild && this.pendingSubmissions > 0) {
+      await this.drainPendingSubmissions(device)
+    }
+
     const resources = this.ensureResources(video, target)
     const timing = this.getTiming(frameTiming.mediaTime)
     const current = this.frameIndex % 2
@@ -429,16 +476,23 @@ export class WebGpuUpscaler {
     compositePass.draw(3)
     compositePass.end()
 
-    const startedAt = performance.now()
     device.queue.submit([encoder.finish()])
-    await device.queue.onSubmittedWorkDone()
-    const completionMs = performance.now() - startedAt
+    this.pendingSubmissions += 1
+    if (this.pendingSubmissions === WebGpuUpscaler.MAX_PENDING_SUBMISSIONS) {
+      this.closeSubmissionBatch(device)
+    }
 
     this.lastMediaTime = frameTiming.mediaTime
     this.previousDt = timing.dt
     this.resetNextFrame = false
     this.frameIndex += 1
-    return { completionMs, historyReset: timing.reset }
+    const gpuQueueMs = this.completedGpuSampleMs
+    this.completedGpuSampleMs = null
+    return {
+      gpuQueueMs,
+      historyReset: timing.reset,
+      pendingSubmissions: this.pendingSubmissions,
+    }
   }
 
   resetHistory() {
@@ -450,6 +504,8 @@ export class WebGpuUpscaler {
     this.lastMediaTime = null
     this.previousDt = 1 / 60
     this.resetNextFrame = true
+    this.completedGpuSampleMs = null
+    this.submissionBatchIndex = 0
   }
 
   private requireDevice() {
@@ -507,6 +563,9 @@ export class WebGpuUpscaler {
     this.uniformBuffer?.destroy()
     this.device?.destroy()
     this.device = null
+    this.pendingSubmissions = 0
+    this.batchFence = null
+    this.completedGpuSampleMs = null
     this.context?.unconfigure()
     this.context = null
   }
