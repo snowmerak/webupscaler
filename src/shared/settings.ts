@@ -7,6 +7,7 @@ export interface BaseUpscalerSettings {
   mode: UpscalerMode
   requestedScale: 2
   sharpness: number
+  deblockStrength: number
   debugOverlay: boolean
   coverageOverlay: boolean
 }
@@ -20,6 +21,7 @@ export const DEFAULT_SETTINGS: UpscalerSettings = {
   mode: 'auto',
   requestedScale: 2,
   sharpness: 0.12,
+  deblockStrength: 0.3,
   debugOverlay: false,
   coverageOverlay: false,
   perHost: {},
@@ -41,6 +43,9 @@ export function normalizeSettings(value: unknown): UpscalerSettings {
     sharpness: typeof input.sharpness === 'number'
       ? Math.min(0.25, Math.max(0, input.sharpness))
       : DEFAULT_SETTINGS.sharpness,
+    deblockStrength: typeof input.deblockStrength === 'number'
+      ? Math.min(0.5, Math.max(0, input.deblockStrength))
+      : DEFAULT_SETTINGS.deblockStrength,
     debugOverlay: typeof input.debugOverlay === 'boolean'
       ? input.debugOverlay
       : DEFAULT_SETTINGS.debugOverlay,
@@ -64,6 +69,9 @@ export function settingsForHost(settings: UpscalerSettings, hostname: string): B
     sharpness: typeof override.sharpness === 'number'
       ? Math.min(0.25, Math.max(0, override.sharpness))
       : settings.sharpness,
+    deblockStrength: typeof override.deblockStrength === 'number'
+      ? Math.min(0.5, Math.max(0, override.deblockStrength))
+      : settings.deblockStrength,
     debugOverlay: typeof override.debugOverlay === 'boolean'
       ? override.debugOverlay
       : settings.debugOverlay,

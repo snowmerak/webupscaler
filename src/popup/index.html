@@ -65,6 +65,17 @@
           <input id="sharpness" type="range" min="0" max="25" step="1" value="12" />
         </label>
 
+        <label class="range-field" for="deblock-strength">
+          <span class="range-heading">
+            <span>
+              <strong>압축 블록 완화</strong>
+              <small>평탄부의 깍두기를 선택적으로 누그러뜨립니다.</small>
+            </span>
+            <output id="deblock-strength-value" for="deblock-strength">30%</output>
+          </span>
+          <input id="deblock-strength" type="range" min="0" max="50" step="1" value="30" />
+        </label>
+
         <label class="check-row" for="debug-overlay">
           <input id="debug-overlay" type="checkbox" />
           <span>영상 위에 성능 정보 표시</span>

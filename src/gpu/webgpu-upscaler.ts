@@ -381,7 +381,7 @@ export class WebGpuUpscaler {
     data[20] = settings.mode === 'eco' ? 0 : settings.sharpness
     data[21] = 2400
     data[22] = Math.pow(0.94, skippedFrames + 1)
-    data[23] = settings.mode === 'eco' ? 0.7 : 0.85
+    data[23] = settings.deblockStrength
     data[24] = timing.reset ? 1 : 0
     data[25] = settings.mode === 'auto' ? 0 : settings.mode === 'balanced' ? 1 : 2
     data[26] = this.frameIndex

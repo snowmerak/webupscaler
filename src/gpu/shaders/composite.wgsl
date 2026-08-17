@@ -19,6 +19,10 @@ struct VertexOutput {
   @location(0) uv: vec2<f32>,
 }
 
+fn luma(color: vec3<f32>) -> f32 {
+  return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
 @vertex
 fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   var positions = array<vec2<f32>, 3>(
@@ -80,16 +84,43 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let confidenceFromCoverage = smoothstep(0.02, 0.85, coverage);
   let resolved = mix(spatial, temporalRadiance, confidenceFromCoverage);
 
-  // Spatial neighbors provide a stable, non-historical limiter for the final
-  // display-only sharpening. They are never written back into history.
-  let north = spatialFallback(outputPosition - vec2<f32>(0.0, 1.0));
-  let south = spatialFallback(outputPosition + vec2<f32>(0.0, 1.0));
-  let west = spatialFallback(outputPosition - vec2<f32>(1.0, 0.0));
-  let east = spatialFallback(outputPosition + vec2<f32>(1.0, 0.0));
-  let blur = spatial * 0.5 + (north + south + west + east) * 0.125;
-  let detail = resolved - blur;
+  // One LR-pixel cross neighborhood. A range-weighted average softens small
+  // codec discontinuities while naturally rejecting samples across real
+  // object edges. This is display-only; observations in history stay intact.
+  let neighborRadius = 2.0;
+  let north = spatialFallback(outputPosition - vec2<f32>(0.0, neighborRadius));
+  let south = spatialFallback(outputPosition + vec2<f32>(0.0, neighborRadius));
+  let west = spatialFallback(outputPosition - vec2<f32>(neighborRadius, 0.0));
+  let east = spatialFallback(outputPosition + vec2<f32>(neighborRadius, 0.0));
+  let northDelta = resolved - north;
+  let southDelta = resolved - south;
+  let westDelta = resolved - west;
+  let eastDelta = resolved - east;
+  let northWeight = exp(-dot(northDelta, northDelta) * 80.0);
+  let southWeight = exp(-dot(southDelta, southDelta) * 80.0);
+  let westWeight = exp(-dot(westDelta, westDelta) * 80.0);
+  let eastWeight = exp(-dot(eastDelta, eastDelta) * 80.0);
+  let bilateral = (
+    resolved * 1.5
+    + north * northWeight + south * southWeight
+    + west * westWeight + east * eastWeight
+  ) / max(1.5 + northWeight + southWeight + westWeight + eastWeight, 0.0001);
+
+  let crossAverage = (north + south + west + east) * 0.25;
+  let artifactMagnitude = abs(luma(resolved) - luma(crossAverage));
+  let sourceUv = sourceUvForOutput(outputPosition);
+  let sourceFeature = textureSampleLevel(featureCurrent, linearClamp, sourceUv, 0.0);
+  let structureProtection = 1.0 - smoothstep(0.025, 0.12, length(sourceFeature.yz));
+  let artifactSignal = smoothstep(0.004, 0.045, artifactMagnitude)
+    * (1.0 - smoothstep(0.07, 0.18, artifactMagnitude));
+  let deblockAmount = uniforms.thresholds.w * structureProtection * artifactSignal;
+  let deblocked = mix(resolved, bilateral, deblockAmount);
+
+  let blur = deblocked * 0.5 + (north + south + west + east) * 0.125;
+  let detail = deblocked - blur;
   let edgeMagnitude = max(max(abs(detail.r), abs(detail.g)), abs(detail.b));
   let edgeMask = 1.0 - smoothstep(0.08, 0.3, edgeMagnitude);
-  let sharpened = resolved + detail * uniforms.thresholds.x * edgeMask;
+  let sharpenStrength = uniforms.thresholds.x * edgeMask * (1.0 - artifactSignal * 0.8);
+  let sharpened = deblocked + detail * sharpenStrength;
   return vec4<f32>(clamp(sharpened, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 }

@@ -28,6 +28,7 @@ const settings: BaseUpscalerSettings = {
   mode: 'balanced',
   requestedScale: 2,
   sharpness: 0.12,
+  deblockStrength: 0.3,
   debugOverlay: false,
   coverageOverlay: false,
 }

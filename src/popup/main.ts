@@ -18,6 +18,8 @@ const controls = {
   mode: required<HTMLSelectElement>('#mode'),
   sharpness: required<HTMLInputElement>('#sharpness'),
   sharpnessValue: required<HTMLOutputElement>('#sharpness-value'),
+  deblockStrength: required<HTMLInputElement>('#deblock-strength'),
+  deblockStrengthValue: required<HTMLOutputElement>('#deblock-strength-value'),
   debugOverlay: required<HTMLInputElement>('#debug-overlay'),
   coverageOverlay: required<HTMLInputElement>('#coverage-overlay'),
 }
@@ -63,11 +65,13 @@ function render() {
   controls.mode.value = settings.mode
   controls.sharpness.value = String(Math.round(settings.sharpness * 100))
   controls.sharpnessValue.value = `${Math.round(settings.sharpness * 100)}%`
+  controls.deblockStrength.value = String(Math.round(settings.deblockStrength * 100))
+  controls.deblockStrengthValue.value = `${Math.round(settings.deblockStrength * 100)}%`
   controls.debugOverlay.checked = settings.debugOverlay
   controls.coverageOverlay.checked = settings.coverageOverlay
 
   const disabled = !status.supportedSite
-  for (const control of [controls.enabled, controls.mode, controls.sharpness, controls.debugOverlay, controls.coverageOverlay]) {
+  for (const control of [controls.enabled, controls.mode, controls.sharpness, controls.deblockStrength, controls.debugOverlay, controls.coverageOverlay]) {
     control.disabled = disabled
   }
 
@@ -114,6 +118,12 @@ controls.sharpness.addEventListener('input', () => {
 })
 controls.sharpness.addEventListener('change', () => {
   void update({ type: 'UPDATE_SETTINGS', patch: { sharpness: Number(controls.sharpness.value) / 100 } }).catch(showError)
+})
+controls.deblockStrength.addEventListener('input', () => {
+  controls.deblockStrengthValue.value = `${controls.deblockStrength.value}%`
+})
+controls.deblockStrength.addEventListener('change', () => {
+  void update({ type: 'UPDATE_SETTINGS', patch: { deblockStrength: Number(controls.deblockStrength.value) / 100 } }).catch(showError)
 })
 controls.debugOverlay.addEventListener('change', () => {
   void update({ type: 'UPDATE_SETTINGS', patch: { debugOverlay: controls.debugOverlay.checked } }).catch(showError)
