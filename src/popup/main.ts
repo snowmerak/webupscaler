@@ -154,7 +154,7 @@ async function initialize() {
   } catch {
     status = {
       ...INITIAL_STATUS,
-      message: '지원되는 SOOP 방송 탭에서 확장을 열어 주세요.',
+      message: '연결되지 않았습니다. 확장을 새로고침한 뒤 SOOP 방송 탭도 새로고침해 주세요.',
     }
   }
   render()

@@ -33,6 +33,9 @@ npm run build
 4. 이 프로젝트의 `dist` 폴더를 선택합니다.
 5. SOOP 방송 페이지를 새로고침한 뒤 확장 팝업에서 활성화합니다.
 
+코드를 다시 빌드했다면 `chrome://extensions`에서 확장을 먼저 새로고침하고,
+그 다음 SOOP 방송 탭도 새로고침해야 새 content script가 주입됩니다.
+
 ## 개발
 
 ```bash
