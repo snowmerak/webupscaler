@@ -8,7 +8,7 @@ struct FrameUniforms {
   flags: vec4<f32>,
 }
 
-@group(0) @binding(0) var historyAccumulator: texture_2d<f32>;
+@group(0) @binding(0) var latentReconstruction: texture_2d<f32>;
 @group(0) @binding(1) var inputFrame: texture_2d<f32>;
 @group(0) @binding(2) var featureCurrent: texture_2d<f32>;
 @group(0) @binding(3) var linearClamp: sampler;
@@ -69,14 +69,16 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // lattice. Avoid integer quantization when the canvas is smaller than HR.
   let outputPosition = input.uv * uniforms.outputSize.xy - vec2<f32>(0.5);
   let spatial = spatialFallback(outputPosition);
-  let history = textureSample(historyAccumulator, linearClamp, input.uv);
-  let coverage = clamp(history.a, 0.0, 1.0);
+  let latent = textureSample(latentReconstruction, linearClamp, input.uv);
+  let coverage = clamp(latent.a, 0.0, 1.0);
 
   if (uniforms.flags.w > 0.5) {
     return vec4<f32>(coverageColor(coverage), 1.0);
   }
 
-  let temporalRadiance = history.rgb / max(coverage, 0.0001);
+  // RGB is the observation-seeded latent HR estimate after two residual
+  // back-projection iterations. Alpha remains real-observation coverage.
+  let temporalRadiance = latent.rgb;
   let confidenceFromCoverage = smoothstep(0.02, 0.85, coverage);
   let resolved = mix(spatial, temporalRadiance, confidenceFromCoverage);
 

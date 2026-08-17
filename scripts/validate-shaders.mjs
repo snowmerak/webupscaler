@@ -6,7 +6,9 @@ const shaders = [
   { file: 'deblock.wgsl', compute: ['main'], bindings: 3 },
   { file: 'analyze.wgsl', compute: ['main'], bindings: 4 },
   { file: 'motion.wgsl', compute: ['main'], bindings: 10 },
-  { file: 'reconstruct.wgsl', compute: ['main'], bindings: 6 },
+  { file: 'reconstruct.wgsl', compute: ['main'], bindings: 7 },
+  { file: 'residual.wgsl', compute: ['main'], bindings: 4 },
+  { file: 'backproject.wgsl', compute: ['main'], bindings: 5 },
   { file: 'composite.wgsl', vertex: ['vertexMain'], fragment: ['fragmentMain'], bindings: 5 },
 ]
 

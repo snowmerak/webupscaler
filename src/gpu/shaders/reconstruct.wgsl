@@ -14,6 +14,7 @@ struct FrameUniforms {
 @group(0) @binding(3) var historyCurrent: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(4) var linearClamp: sampler;
 @group(0) @binding(5) var<uniform> uniforms: FrameUniforms;
+@group(0) @binding(6) var latentSeed: texture_storage_2d<rgba16float, write>;
 
 fn luma(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -136,5 +137,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     historyCurrent,
     vec2<i32>(id.xy),
     vec4<f32>(storedPremul, storedWeight),
+  );
+
+  // Keep inferred reconstruction separate from the observation accumulator.
+  // RGB is a latent HR radiance seed; A remains real-observation coverage.
+  let spatialSeed = textureSampleLevel(inputFrame, linearClamp, sourceUv, 0.0).rgb;
+  let latentConfidence = smoothstep(0.02, 0.85, storedWeight);
+  let seededRadiance = mix(spatialSeed, temporalRadiance, latentConfidence);
+  textureStore(
+    latentSeed,
+    vec2<i32>(id.xy),
+    vec4<f32>(seededRadiance, storedWeight),
   );
 }
