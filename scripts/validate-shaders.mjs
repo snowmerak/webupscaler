@@ -4,9 +4,9 @@ import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js'
 
 const shaders = [
   { file: 'analyze.wgsl', compute: ['main'], bindings: 4 },
-  { file: 'motion.wgsl', compute: ['main'], bindings: 8 },
-  { file: 'reconstruct.wgsl', compute: ['main'], bindings: 7 },
-  { file: 'composite.wgsl', vertex: ['vertexMain'], fragment: ['fragmentMain'], bindings: 3 },
+  { file: 'motion.wgsl', compute: ['main'], bindings: 10 },
+  { file: 'reconstruct.wgsl', compute: ['main'], bindings: 6 },
+  { file: 'composite.wgsl', vertex: ['vertexMain'], fragment: ['fragmentMain'], bindings: 5 },
 ]
 
 for (const expectation of shaders) {

@@ -8,6 +8,7 @@ export interface BaseUpscalerSettings {
   requestedScale: 2
   sharpness: number
   debugOverlay: boolean
+  coverageOverlay: boolean
 }
 
 export interface UpscalerSettings extends BaseUpscalerSettings {
@@ -20,6 +21,7 @@ export const DEFAULT_SETTINGS: UpscalerSettings = {
   requestedScale: 2,
   sharpness: 0.12,
   debugOverlay: false,
+  coverageOverlay: false,
   perHost: {},
 }
 
@@ -42,6 +44,9 @@ export function normalizeSettings(value: unknown): UpscalerSettings {
     debugOverlay: typeof input.debugOverlay === 'boolean'
       ? input.debugOverlay
       : DEFAULT_SETTINGS.debugOverlay,
+    coverageOverlay: typeof input.coverageOverlay === 'boolean'
+      ? input.coverageOverlay
+      : DEFAULT_SETTINGS.coverageOverlay,
     perHost: typeof input.perHost === 'object' && input.perHost !== null
       ? input.perHost
       : {},
@@ -62,6 +67,8 @@ export function settingsForHost(settings: UpscalerSettings, hostname: string): B
     debugOverlay: typeof override.debugOverlay === 'boolean'
       ? override.debugOverlay
       : settings.debugOverlay,
+    coverageOverlay: typeof override.coverageOverlay === 'boolean'
+      ? override.coverageOverlay
+      : settings.coverageOverlay,
   }
 }
-

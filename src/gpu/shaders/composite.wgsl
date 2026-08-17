@@ -8,9 +8,11 @@ struct FrameUniforms {
   flags: vec4<f32>,
 }
 
-@group(0) @binding(0) var historyInput: texture_2d<f32>;
-@group(0) @binding(1) var linearClamp: sampler;
-@group(0) @binding(2) var<uniform> uniforms: FrameUniforms;
+@group(0) @binding(0) var historyAccumulator: texture_2d<f32>;
+@group(0) @binding(1) var inputFrame: texture_2d<f32>;
+@group(0) @binding(2) var featureCurrent: texture_2d<f32>;
+@group(0) @binding(3) var linearClamp: sampler;
+@group(0) @binding(4) var<uniform> uniforms: FrameUniforms;
 
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
@@ -30,18 +32,62 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
-@fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let texel = uniforms.outputSize.zw;
-  let center = textureSample(historyInput, linearClamp, input.uv).rgb;
-  let north = textureSample(historyInput, linearClamp, input.uv - vec2<f32>(0.0, texel.y)).rgb;
-  let south = textureSample(historyInput, linearClamp, input.uv + vec2<f32>(0.0, texel.y)).rgb;
-  let west = textureSample(historyInput, linearClamp, input.uv - vec2<f32>(texel.x, 0.0)).rgb;
-  let east = textureSample(historyInput, linearClamp, input.uv + vec2<f32>(texel.x, 0.0)).rgb;
-  let blur = center * 0.5 + (north + south + west + east) * 0.125;
-  let detail = center - blur;
-  let edgeMask = 1.0 - smoothstep(0.08, 0.3, max(max(abs(detail.r), abs(detail.g)), abs(detail.b)));
-  let sharpened = center + detail * uniforms.thresholds.x * edgeMask;
-  return vec4<f32>(clamp(sharpened, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+fn sourceUvForOutput(outputPosition: vec2<f32>) -> vec2<f32> {
+  let scale = uniforms.outputSize.xy * uniforms.inputSize.zw;
+  let hrCoordinate = outputPosition / scale;
+  return (hrCoordinate + vec2<f32>(0.5)) * uniforms.inputSize.zw;
 }
 
+fn spatialFallback(outputPosition: vec2<f32>) -> vec3<f32> {
+  let sourceUv = sourceUvForOutput(outputPosition);
+  let spatialBase = textureSampleLevel(inputFrame, linearClamp, sourceUv, 0.0).rgb;
+  let feature = textureSampleLevel(featureCurrent, linearClamp, sourceUv, 0.0);
+  let gradient = feature.yz;
+  let gradientLength = length(gradient);
+  let tangent = vec2<f32>(-gradient.y, gradient.x) / max(gradientLength, 0.00001);
+  let directionalRadius = uniforms.inputSize.zw * 0.45;
+  let directional = 0.5 * (
+    textureSampleLevel(inputFrame, linearClamp, sourceUv + tangent * directionalRadius, 0.0).rgb
+    + textureSampleLevel(inputFrame, linearClamp, sourceUv - tangent * directionalRadius, 0.0).rgb
+  );
+  let edgeStrength = smoothstep(0.02, 0.14, gradientLength)
+    * smoothstep(0.006, 0.09, feature.w);
+  return mix(spatialBase, directional, edgeStrength * 0.12);
+}
+
+fn coverageColor(coverage: f32) -> vec3<f32> {
+  let cold = vec3<f32>(0.015, 0.025, 0.11);
+  let observed = vec3<f32>(0.0, 0.86, 0.72);
+  let full = vec3<f32>(1.0, 0.88, 0.18);
+  let middle = mix(cold, observed, smoothstep(0.0, 0.65, coverage));
+  return mix(middle, full, smoothstep(0.65, 1.0, coverage));
+}
+
+@fragment
+fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+  let outputPosition = floor(input.uv * uniforms.outputSize.xy);
+  let spatial = spatialFallback(outputPosition);
+  let history = textureSample(historyAccumulator, linearClamp, input.uv);
+  let coverage = clamp(history.a, 0.0, 1.0);
+
+  if (uniforms.flags.w > 0.5) {
+    return vec4<f32>(coverageColor(coverage), 1.0);
+  }
+
+  let temporalRadiance = history.rgb / max(coverage, 0.0001);
+  let confidenceFromCoverage = smoothstep(0.02, 0.85, coverage);
+  let resolved = mix(spatial, temporalRadiance, confidenceFromCoverage);
+
+  // Spatial neighbors provide a stable, non-historical limiter for the final
+  // display-only sharpening. They are never written back into history.
+  let north = spatialFallback(outputPosition - vec2<f32>(0.0, 1.0));
+  let south = spatialFallback(outputPosition + vec2<f32>(0.0, 1.0));
+  let west = spatialFallback(outputPosition - vec2<f32>(1.0, 0.0));
+  let east = spatialFallback(outputPosition + vec2<f32>(1.0, 0.0));
+  let blur = spatial * 0.5 + (north + south + west + east) * 0.125;
+  let detail = resolved - blur;
+  let edgeMagnitude = max(max(abs(detail.r), abs(detail.g)), abs(detail.b));
+  let edgeMask = 1.0 - smoothstep(0.08, 0.3, edgeMagnitude);
+  let sharpened = resolved + detail * uniforms.thresholds.x * edgeMask;
+  return vec4<f32>(clamp(sharpened, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+}

@@ -14,6 +14,7 @@ const video = required<HTMLVideoElement>('#video')
 const status = required<HTMLElement>('#status')
 const metrics = required<HTMLElement>('#metrics')
 const toggle = required<HTMLButtonElement>('#toggle')
+const coverageToggle = required<HTMLButtonElement>('#coverage-toggle')
 function get2dContext(canvas: HTMLCanvasElement) {
   const result = canvas.getContext('2d')
   if (!result) throw new Error('2D canvas를 초기화하지 못했습니다.')
@@ -28,6 +29,7 @@ const settings: BaseUpscalerSettings = {
   requestedScale: 2,
   sharpness: 0.12,
   debugOverlay: false,
+  coverageOverlay: false,
 }
 const target = { kind: 'upscale', width: 960, height: 540, scale: 2 } as const
 const upscaler = new WebGpuUpscaler(output, (message) => {
@@ -118,6 +120,14 @@ toggle.addEventListener('click', () => {
   } else {
     cancelAnimationFrame(animationFrame)
   }
+})
+
+coverageToggle.addEventListener('click', () => {
+  settings.coverageOverlay = !settings.coverageOverlay
+  coverageToggle.textContent = settings.coverageOverlay
+    ? '일반 영상 보기'
+    : 'Coverage heatmap 보기'
+  upscaler.resetHistory()
 })
 
 async function initialize() {

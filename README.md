@@ -9,9 +9,10 @@ HTMLVideoElement
   → copyExternalImageToTexture (프레임당 1회)
   → 1/4 해상도 feature 분석
   → current patch 캐시 기반 diamond motion 추정 (속도/가속도 예측)
+  → 원본 luma 기반 0.25/0.125 px motion refinement
   → LR 관측 표본을 2× HR phase lattice에 배치
-  → RGBA16F radiance/coverage history 재투영 및 temporal 복원
-  → 방향성 공간 복원과 결합
+  → RGBA16F premultiplied observation/coverage history 재투영
+  → 화면 출력에서만 방향성 공간 fallback과 temporal radiance 결합
   → 선택적 5-tap light sharpen
   → WebGPU canvas
 ```
@@ -39,6 +40,7 @@ npm run dev
 
 - 팝업 미리보기: `http://127.0.0.1:5173/src/popup/index.html`
 - Synthetic GPU harness: `http://127.0.0.1:5173/src/demo/index.html`
+- 팝업과 harness의 `HR coverage heatmap`으로 실제 관측 phase 누적 확인
 - 타입 검사: `npm run typecheck`
 - WGSL 정적 검사: `npm run validate:shaders`
 - 프로덕션 빌드: `npm run build`
@@ -59,4 +61,4 @@ src/
 
 ## 현재 범위
 
-이번 버전은 SOOP-first 기반, 가속도 예측 motion estimation, LR 관측 위치에 기반한 HR radiance/coverage 누적, 장면 전환/탐색 시 history reset을 구현합니다. GPU submit은 최대 2개만 pending으로 유지하며 GPU queue 시간은 저빈도로 표본 측정합니다. Auto 모드의 장치별 자동 튜닝과 실제 방송별 화질·성능 프로파일링은 후속 범위입니다.
+이번 버전은 SOOP-first 기반, 가속도 예측 motion estimation, LR 관측 위치에 기반한 premultiplied HR observation/coverage 누적, 장면 전환/탐색 시 history reset을 구현합니다. 정확한 2× 출력에서는 현재 LR 표본과 일치하는 even/even phase만 hard coverage로 인정하며, 공간 보간값은 history에 저장하지 않습니다. GPU submit은 최대 2개만 pending으로 유지하며 GPU queue 시간은 저빈도로 표본 측정합니다. Auto 모드의 장치별 자동 튜닝과 실제 방송별 화질·성능 프로파일링은 후속 범위입니다.

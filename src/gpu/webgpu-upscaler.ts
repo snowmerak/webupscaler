@@ -19,7 +19,7 @@ export interface ProcessResult {
 }
 
 interface GpuResources {
-  input: GPUTexture
+  input: Pair<GPUTexture>
   features: Pair<GPUTexture>
   motionStates: Pair<GPUTexture>
   motionMeta: Pair<GPUTexture>
@@ -211,8 +211,8 @@ export class WebGpuUpscaler {
     this.canvas.width = target.width
     this.canvas.height = target.height
 
-    const input = device.createTexture({
-      label: 'Current video frame',
+    const input = this.pair((index) => device.createTexture({
+      label: `Video frame ${index}`,
       size: [video.videoWidth, video.videoHeight],
       format: 'rgba8unorm',
       // copyExternalImageToTexture requires both COPY_DST and
@@ -220,7 +220,7 @@ export class WebGpuUpscaler {
       usage: GPUTextureUsage.COPY_DST
         | GPUTextureUsage.RENDER_ATTACHMENT
         | GPUTextureUsage.TEXTURE_BINDING,
-    })
+    }))
     const features = this.pair((index) => device.createTexture({
       label: `Quarter-resolution features ${index}`,
       size: [analysisWidth, analysisHeight],
@@ -255,7 +255,7 @@ export class WebGpuUpscaler {
       label: `Analyze bind group ${current}`,
       layout: analyzePipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: input.createView() },
+        { binding: 0, resource: input[current].createView() },
         { binding: 1, resource: sampler },
         { binding: 2, resource: features[current].createView() },
         { binding: 3, resource: { buffer: uniformBuffer } },
@@ -269,12 +269,14 @@ export class WebGpuUpscaler {
         entries: [
           { binding: 0, resource: features[current].createView() },
           { binding: 1, resource: features[previous].createView() },
-          { binding: 2, resource: motionStates[previous].createView() },
-          { binding: 3, resource: motionMeta[previous].createView() },
-          { binding: 4, resource: motionStates[current].createView() },
-          { binding: 5, resource: motionMeta[current].createView() },
-          { binding: 6, resource: sampler },
-          { binding: 7, resource: { buffer: uniformBuffer } },
+          { binding: 2, resource: input[current].createView() },
+          { binding: 3, resource: input[previous].createView() },
+          { binding: 4, resource: motionStates[previous].createView() },
+          { binding: 5, resource: motionMeta[previous].createView() },
+          { binding: 6, resource: motionStates[current].createView() },
+          { binding: 7, resource: motionMeta[current].createView() },
+          { binding: 8, resource: sampler },
+          { binding: 9, resource: { buffer: uniformBuffer } },
         ],
       })
     })
@@ -284,13 +286,12 @@ export class WebGpuUpscaler {
         label: `Temporal reconstruct bind group ${current}`,
         layout: reconstructPipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: input.createView() },
-          { binding: 1, resource: features[current].createView() },
-          { binding: 2, resource: motionMeta[current].createView() },
-          { binding: 3, resource: history[previous].createView() },
-          { binding: 4, resource: history[current].createView() },
-          { binding: 5, resource: sampler },
-          { binding: 6, resource: { buffer: uniformBuffer } },
+          { binding: 0, resource: input[current].createView() },
+          { binding: 1, resource: motionMeta[current].createView() },
+          { binding: 2, resource: history[previous].createView() },
+          { binding: 3, resource: history[current].createView() },
+          { binding: 4, resource: sampler },
+          { binding: 5, resource: { buffer: uniformBuffer } },
         ],
       })
     })
@@ -299,8 +300,10 @@ export class WebGpuUpscaler {
       layout: compositePipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: history[current].createView() },
-        { binding: 1, resource: sampler },
-        { binding: 2, resource: { buffer: uniformBuffer } },
+        { binding: 1, resource: input[current].createView() },
+        { binding: 2, resource: features[current].createView() },
+        { binding: 3, resource: sampler },
+        { binding: 4, resource: { buffer: uniformBuffer } },
       ],
     }))
 
@@ -371,7 +374,7 @@ export class WebGpuUpscaler {
     data[24] = timing.reset ? 1 : 0
     data[25] = settings.mode === 'auto' ? 0 : settings.mode === 'balanced' ? 1 : 2
     data[26] = this.frameIndex
-    data[27] = skippedFrames
+    data[27] = settings.coverageOverlay ? 1 : 0
     this.requireDevice().queue.writeBuffer(this.requireUniformBuffer(), 0, data)
   }
 
@@ -433,7 +436,7 @@ export class WebGpuUpscaler {
     try {
       device.queue.copyExternalImageToTexture(
         { source: video },
-        { texture: resources.input, colorSpace: 'srgb' },
+        { texture: resources.input[current], colorSpace: 'srgb' },
         { width: video.videoWidth, height: video.videoHeight },
       )
     } catch (error) {
@@ -549,7 +552,7 @@ export class WebGpuUpscaler {
   }
 
   private destroyResources() {
-    this.resources?.input.destroy()
+    for (const texture of this.resources?.input ?? []) texture.destroy()
     for (const texture of this.resources?.features ?? []) texture.destroy()
     for (const texture of this.resources?.motionStates ?? []) texture.destroy()
     for (const texture of this.resources?.motionMeta ?? []) texture.destroy()

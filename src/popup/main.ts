@@ -19,6 +19,7 @@ const controls = {
   sharpness: required<HTMLInputElement>('#sharpness'),
   sharpnessValue: required<HTMLOutputElement>('#sharpness-value'),
   debugOverlay: required<HTMLInputElement>('#debug-overlay'),
+  coverageOverlay: required<HTMLInputElement>('#coverage-overlay'),
 }
 const view = {
   badge: required<HTMLSpanElement>('#state-badge'),
@@ -63,9 +64,10 @@ function render() {
   controls.sharpness.value = String(Math.round(settings.sharpness * 100))
   controls.sharpnessValue.value = `${Math.round(settings.sharpness * 100)}%`
   controls.debugOverlay.checked = settings.debugOverlay
+  controls.coverageOverlay.checked = settings.coverageOverlay
 
   const disabled = !status.supportedSite
-  for (const control of [controls.enabled, controls.mode, controls.sharpness, controls.debugOverlay]) {
+  for (const control of [controls.enabled, controls.mode, controls.sharpness, controls.debugOverlay, controls.coverageOverlay]) {
     control.disabled = disabled
   }
 
@@ -115,6 +117,9 @@ controls.sharpness.addEventListener('change', () => {
 })
 controls.debugOverlay.addEventListener('change', () => {
   void update({ type: 'UPDATE_SETTINGS', patch: { debugOverlay: controls.debugOverlay.checked } }).catch(showError)
+})
+controls.coverageOverlay.addEventListener('change', () => {
+  void update({ type: 'UPDATE_SETTINGS', patch: { coverageOverlay: controls.coverageOverlay.checked } }).catch(showError)
 })
 
 function showError(error: unknown) {
