@@ -74,7 +74,7 @@ function render() {
   if (status.metrics) {
     view.metrics.hidden = false
     view.sourceSize.textContent = `${status.metrics.sourceWidth}×${status.metrics.sourceHeight}`
-    view.outputSize.textContent = `${status.metrics.outputWidth}×${status.metrics.outputHeight}`
+    view.outputSize.textContent = `${status.metrics.outputWidth}×${status.metrics.outputHeight} → ${status.metrics.presentationWidth}×${status.metrics.presentationHeight}`
     view.frameTime.textContent = `${status.metrics.gpuQueueP90Ms.toFixed(1)} ms`
   } else {
     view.metrics.hidden = true

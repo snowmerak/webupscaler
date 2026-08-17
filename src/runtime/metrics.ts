@@ -24,7 +24,14 @@ export class MetricsTracker {
     this.historyResets += 1
   }
 
-  snapshot(sourceWidth: number, sourceHeight: number, outputWidth: number, outputHeight: number): RuntimeMetrics {
+  snapshot(
+    sourceWidth: number,
+    sourceHeight: number,
+    outputWidth: number,
+    outputHeight: number,
+    presentationWidth: number,
+    presentationHeight: number,
+  ): RuntimeMetrics {
     const sorted = [...this.samples].sort((a, b) => a - b)
     const p90Index = Math.max(0, Math.ceil(sorted.length * 0.9) - 1)
     const latest = this.samples.at(-1) ?? 0
@@ -34,6 +41,8 @@ export class MetricsTracker {
       sourceHeight,
       outputWidth,
       outputHeight,
+      presentationWidth,
+      presentationHeight,
       gpuQueueMs: latest,
       gpuQueueP90Ms: sorted[p90Index] ?? latest,
       processedFrames: this.processedFrames,

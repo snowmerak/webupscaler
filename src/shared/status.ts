@@ -9,6 +9,7 @@ export type RuntimeState =
 
 export type BypassReason =
   | 'source-large-enough'
+  | 'pixel-budget-exceeded'
   | 'video-paused'
   | 'document-hidden'
   | 'webgpu-unavailable'
@@ -18,6 +19,8 @@ export interface RuntimeMetrics {
   sourceHeight: number
   outputWidth: number
   outputHeight: number
+  presentationWidth: number
+  presentationHeight: number
   gpuQueueMs: number
   gpuQueueP90Ms: number
   processedFrames: number

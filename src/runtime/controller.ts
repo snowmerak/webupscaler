@@ -170,7 +170,7 @@ export class UpscalerController {
         enabled: true,
         supportedSite: true,
         adapter: this.options.adapter.id,
-        message: '원본 해상도가 현재 표시 크기에 충분합니다.',
+        message: '정확한 2× 내부 복원이 GPU 픽셀 예산을 초과합니다.',
         bypassReason: target.reason,
       })
       return
@@ -197,13 +197,15 @@ export class UpscalerController {
       video.videoHeight,
       target.width,
       target.height,
+      target.presentationWidth,
+      target.presentationHeight,
     )
     this.publish({
       state: 'running',
       enabled: true,
       supportedSite: true,
       adapter: this.options.adapter.id,
-      message: `${video.videoWidth}×${video.videoHeight} → ${target.width}×${target.height}`,
+      message: `${video.videoWidth}×${video.videoHeight} → 2× ${target.width}×${target.height} → 표시 ${target.presentationWidth}×${target.presentationHeight}`,
       metrics,
     })
     this.updateDebugOverlay()
@@ -215,7 +217,8 @@ export class UpscalerController {
       ? [
           'Web Upscaler v2',
           `Source ${metrics.sourceWidth}×${metrics.sourceHeight}`,
-          `Output ${metrics.outputWidth}×${metrics.outputHeight}`,
+          `Internal ${metrics.outputWidth}×${metrics.outputHeight}`,
+          `Display ${metrics.presentationWidth}×${metrics.presentationHeight}`,
           `Mode ${this.settings.mode}`,
           `GPU queue ${metrics.gpuQueueMs.toFixed(1)} ms / p90 ${metrics.gpuQueueP90Ms.toFixed(1)} ms`,
           `Pending ${metrics.pendingSubmissions}/2`,

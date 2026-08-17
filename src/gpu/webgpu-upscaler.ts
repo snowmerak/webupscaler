@@ -194,6 +194,24 @@ export class WebGpuUpscaler {
     const motionHeight = Math.ceil(video.videoHeight / 16)
     const existing = this.resources
 
+    if (Math.max(
+      target.width,
+      target.height,
+      target.presentationWidth,
+      target.presentationHeight,
+    ) > device.limits.maxTextureDimension2D) {
+      throw new WebGpuUnavailableError('요청한 출력 크기가 GPU texture 제한을 넘었습니다.')
+    }
+
+    // The temporal lattice stays at exact 2x while the swap-chain follows the
+    // player. Resizing only the canvas preserves accumulated HR history.
+    if (this.canvas.width !== target.presentationWidth) {
+      this.canvas.width = target.presentationWidth
+    }
+    if (this.canvas.height !== target.presentationHeight) {
+      this.canvas.height = target.presentationHeight
+    }
+
     if (existing
       && existing.inputWidth === video.videoWidth
       && existing.inputHeight === video.videoHeight
@@ -202,15 +220,8 @@ export class WebGpuUpscaler {
       return existing
     }
 
-    if (Math.max(target.width, target.height) > device.limits.maxTextureDimension2D) {
-      throw new WebGpuUnavailableError('요청한 출력 크기가 GPU texture 제한을 넘었습니다.')
-    }
-
     this.destroyResources()
     this.resetTemporalState()
-    this.canvas.width = target.width
-    this.canvas.height = target.height
-
     const input = this.pair((index) => device.createTexture({
       label: `Video frame ${index}`,
       size: [video.videoWidth, video.videoHeight],
@@ -424,7 +435,9 @@ export class WebGpuUpscaler {
       || existing.outputWidth !== target.width
       || existing.outputHeight !== target.height
     )
-    if (resourcesNeedRebuild && this.pendingSubmissions > 0) {
+    const presentationNeedsResize = this.canvas.width !== target.presentationWidth
+      || this.canvas.height !== target.presentationHeight
+    if ((resourcesNeedRebuild || presentationNeedsResize) && this.pendingSubmissions > 0) {
       await this.drainPendingSubmissions(device)
     }
 

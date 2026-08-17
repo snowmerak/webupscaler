@@ -13,6 +13,7 @@ HTMLVideoElement
   → LR 관측 표본을 2× HR phase lattice에 배치
   → RGBA16F premultiplied observation/coverage history 재투영
   → 화면 출력에서만 방향성 공간 fallback과 temporal radiance 결합
+  → 정확한 2× 내부 결과를 실제 플레이어 크기로 최종 리사이즈
   → 선택적 5-tap light sharpen
   → WebGPU canvas
 ```

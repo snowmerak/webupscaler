@@ -65,7 +65,9 @@ fn coverageColor(coverage: f32) -> vec3<f32> {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let outputPosition = floor(input.uv * uniforms.outputSize.xy);
+  // Map each presentation pixel center continuously onto the exact 2x HR
+  // lattice. Avoid integer quantization when the canvas is smaller than HR.
+  let outputPosition = input.uv * uniforms.outputSize.xy - vec2<f32>(0.5);
   let spatial = spatialFallback(outputPosition);
   let history = textureSample(historyAccumulator, linearClamp, input.uv);
   let coverage = clamp(history.a, 0.0, 1.0);

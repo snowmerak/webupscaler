@@ -31,7 +31,14 @@ const settings: BaseUpscalerSettings = {
   debugOverlay: false,
   coverageOverlay: false,
 }
-const target = { kind: 'upscale', width: 960, height: 540, scale: 2 } as const
+const target = {
+  kind: 'upscale',
+  width: 960,
+  height: 540,
+  scale: 2,
+  presentationWidth: 720,
+  presentationHeight: 405,
+} as const
 const upscaler = new WebGpuUpscaler(output, (message) => {
   status.textContent = `GPU 연결 끊김: ${message}`
   status.dataset.tone = 'error'
@@ -101,7 +108,7 @@ async function processFrame() {
     status.textContent = '실행 중'
     status.dataset.tone = 'running'
     const gpuTime = lastGpuQueueMs === null ? '측정 대기' : `${lastGpuQueueMs.toFixed(1)} ms`
-    metrics.textContent = `처리 ${processed.toLocaleString()} 프레임 · GPU queue ${gpuTime} · pending ${result.pendingSubmissions}/2${result.historyReset ? ' · history reset' : ''}`
+    metrics.textContent = `내부 ${target.width}×${target.height} → 표시 ${target.presentationWidth}×${target.presentationHeight} · 처리 ${processed.toLocaleString()} 프레임 · GPU queue ${gpuTime} · pending ${result.pendingSubmissions}/2${result.historyReset ? ' · history reset' : ''}`
   } catch (error) {
     status.textContent = '실행 오류'
     status.dataset.tone = 'error'
