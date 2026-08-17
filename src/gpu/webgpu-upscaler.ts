@@ -208,7 +208,11 @@ export class WebGpuUpscaler {
       label: 'Current video frame',
       size: [video.videoWidth, video.videoHeight],
       format: 'rgba8unorm',
-      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+      // copyExternalImageToTexture requires both COPY_DST and
+      // RENDER_ATTACHMENT on Chromium/Dawn destinations.
+      usage: GPUTextureUsage.COPY_DST
+        | GPUTextureUsage.RENDER_ATTACHMENT
+        | GPUTextureUsage.TEXTURE_BINDING,
     })
     const features = this.pair((index) => device.createTexture({
       label: `Quarter-resolution features ${index}`,
@@ -507,4 +511,3 @@ export class WebGpuUpscaler {
     this.context = null
   }
 }
-
