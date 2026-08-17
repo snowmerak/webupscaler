@@ -7,15 +7,15 @@ SOOP `video#livePlayer`를 감지하고 WebGPU로 실시간 temporal 업스케�
 ```text
 HTMLVideoElement
   → copyExternalImageToTexture (프레임당 1회)
+  → 입력 해상도 wide YCoCg deblock (4/8/16 px 경계, chroma 우선 완화)
   → 1/4 해상도 feature 분석
   → current patch 캐시 기반 diamond motion 추정 (속도/가속도 예측)
   → 원본 luma 기반 0.25/0.125 px motion refinement
   → LR 관측 표본을 2× HR phase lattice에 배치
   → RGBA16F premultiplied observation/coverage history 재투영
   → 화면 출력에서만 방향성 공간 fallback과 temporal radiance 결합
-  → edge-aware 압축 블록 완화 후 선택적 sharpen
   → 정확한 2× 내부 결과를 실제 플레이어 크기로 최종 리사이즈
-  → 선택적 5-tap light sharpen
+  → 선택적 light sharpen
   → WebGPU canvas
 ```
 
@@ -66,4 +66,4 @@ src/
 
 ## 현재 범위
 
-이번 버전은 SOOP-first 기반, 가속도 예측 motion estimation, LR 관측 위치에 기반한 premultiplied HR observation/coverage 누적, 장면 전환/탐색 시 history reset을 구현합니다. 정확한 2× 출력에서는 현재 LR 표본과 일치하는 even/even phase만 hard coverage로 인정하며, 공간 보간값은 history에 저장하지 않습니다. GPU submit은 최대 2개만 pending으로 유지하며 GPU queue 시간은 저빈도로 표본 측정합니다. Auto 모드의 장치별 자동 튜닝과 실제 방송별 화질·성능 프로파일링은 후속 범위입니다.
+이번 버전은 SOOP-first 기반, 가속도 예측 motion estimation, LR 관측 위치에 기반한 premultiplied HR observation/coverage 누적, 장면 전환/탐색 시 history reset을 구현합니다. 정확한 2× 출력에서는 현재 LR 표본과 일치하는 even/even phase만 hard coverage로 인정하며, 공간 보간값은 history에 저장하지 않습니다. 별도 입력 deblock pass는 실제 경계를 range weight로 보호하면서 4/8/16 px 코덱 경계와 chroma 얼룩을 temporal 누적 전에 완화합니다. GPU submit은 최대 2개만 pending으로 유지하며 GPU queue 시간은 저빈도로 표본 측정합니다. Auto 모드의 장치별 자동 튜닝과 실제 방송별 화질·성능 프로파일링은 후속 범위입니다.

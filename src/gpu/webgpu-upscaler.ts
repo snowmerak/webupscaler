@@ -2,6 +2,7 @@ import type { OutputTarget } from '../runtime/output-policy'
 import type { BaseUpscalerSettings } from '../shared/settings'
 import analyzeShader from './shaders/analyze.wgsl?raw'
 import compositeShader from './shaders/composite.wgsl?raw'
+import deblockShader from './shaders/deblock.wgsl?raw'
 import motionShader from './shaders/motion.wgsl?raw'
 import reconstructShader from './shaders/reconstruct.wgsl?raw'
 
@@ -20,10 +21,12 @@ export interface ProcessResult {
 
 interface GpuResources {
   input: Pair<GPUTexture>
+  filteredInput: Pair<GPUTexture>
   features: Pair<GPUTexture>
   motionStates: Pair<GPUTexture>
   motionMeta: Pair<GPUTexture>
   history: Pair<GPUTexture>
+  deblockBindGroups: Pair<GPUBindGroup>
   analyzeBindGroups: Pair<GPUBindGroup>
   motionBindGroups: Pair<GPUBindGroup>
   reconstructBindGroups: Pair<GPUBindGroup>
@@ -65,6 +68,7 @@ export class WebGpuUpscaler {
   private canvasFormat: GPUTextureFormat | null = null
   private sampler: GPUSampler | null = null
   private uniformBuffer: GPUBuffer | null = null
+  private deblockPipeline: GPUComputePipeline | null = null
   private analyzePipeline: GPUComputePipeline | null = null
   private motionPipeline: GPUComputePipeline | null = null
   private reconstructPipeline: GPUComputePipeline | null = null
@@ -133,17 +137,24 @@ export class WebGpuUpscaler {
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     })
 
+    const deblockModule = this.device.createShaderModule({ label: 'Wide deblock shader', code: deblockShader })
     const analyzeModule = this.device.createShaderModule({ label: 'Analyze shader', code: analyzeShader })
     const motionModule = this.device.createShaderModule({ label: 'Motion shader', code: motionShader })
     const reconstructModule = this.device.createShaderModule({ label: 'Temporal reconstruct shader', code: reconstructShader })
     const compositeModule = this.device.createShaderModule({ label: 'Composite shader', code: compositeShader })
     await Promise.all([
+      this.assertShader(deblockModule, 'Wide deblock'),
       this.assertShader(analyzeModule, 'Analyze'),
       this.assertShader(motionModule, 'Motion'),
       this.assertShader(reconstructModule, 'Temporal reconstruct'),
       this.assertShader(compositeModule, 'Composite'),
     ])
 
+    this.deblockPipeline = await this.device.createComputePipelineAsync({
+      label: 'Wide codec deblock pipeline',
+      layout: 'auto',
+      compute: { module: deblockModule, entryPoint: 'main' },
+    })
     this.analyzePipeline = await this.device.createComputePipelineAsync({
       label: 'Analyze pipeline',
       layout: 'auto',
@@ -232,6 +243,12 @@ export class WebGpuUpscaler {
         | GPUTextureUsage.RENDER_ATTACHMENT
         | GPUTextureUsage.TEXTURE_BINDING,
     }))
+    const filteredInput = this.pair((index) => device.createTexture({
+      label: `Wide-deblocked video frame ${index}`,
+      size: [video.videoWidth, video.videoHeight],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
     const features = this.pair((index) => device.createTexture({
       label: `Quarter-resolution features ${index}`,
       size: [analysisWidth, analysisHeight],
@@ -258,15 +275,25 @@ export class WebGpuUpscaler {
     }))
     const sampler = this.requireSampler()
     const uniformBuffer = this.requireUniformBuffer()
+    const deblockPipeline = this.requireDeblockPipeline()
     const analyzePipeline = this.requireAnalyzePipeline()
     const motionPipeline = this.requireMotionPipeline()
     const reconstructPipeline = this.requireReconstructPipeline()
     const compositePipeline = this.requireCompositePipeline()
+    const deblockBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Wide deblock bind group ${current}`,
+      layout: deblockPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: input[current].createView() },
+        { binding: 1, resource: filteredInput[current].createView() },
+        { binding: 2, resource: { buffer: uniformBuffer } },
+      ],
+    }))
     const analyzeBindGroups = this.pair((current) => device.createBindGroup({
       label: `Analyze bind group ${current}`,
       layout: analyzePipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: input[current].createView() },
+        { binding: 0, resource: filteredInput[current].createView() },
         { binding: 1, resource: sampler },
         { binding: 2, resource: features[current].createView() },
         { binding: 3, resource: { buffer: uniformBuffer } },
@@ -280,8 +307,8 @@ export class WebGpuUpscaler {
         entries: [
           { binding: 0, resource: features[current].createView() },
           { binding: 1, resource: features[previous].createView() },
-          { binding: 2, resource: input[current].createView() },
-          { binding: 3, resource: input[previous].createView() },
+          { binding: 2, resource: filteredInput[current].createView() },
+          { binding: 3, resource: filteredInput[previous].createView() },
           { binding: 4, resource: motionStates[previous].createView() },
           { binding: 5, resource: motionMeta[previous].createView() },
           { binding: 6, resource: motionStates[current].createView() },
@@ -297,7 +324,7 @@ export class WebGpuUpscaler {
         label: `Temporal reconstruct bind group ${current}`,
         layout: reconstructPipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: input[current].createView() },
+          { binding: 0, resource: filteredInput[current].createView() },
           { binding: 1, resource: motionMeta[current].createView() },
           { binding: 2, resource: history[previous].createView() },
           { binding: 3, resource: history[current].createView() },
@@ -311,7 +338,7 @@ export class WebGpuUpscaler {
       layout: compositePipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: history[current].createView() },
-        { binding: 1, resource: input[current].createView() },
+        { binding: 1, resource: filteredInput[current].createView() },
         { binding: 2, resource: features[current].createView() },
         { binding: 3, resource: sampler },
         { binding: 4, resource: { buffer: uniformBuffer } },
@@ -320,10 +347,12 @@ export class WebGpuUpscaler {
 
     this.resources = {
       input,
+      filteredInput,
       features,
       motionStates,
       motionMeta,
       history,
+      deblockBindGroups,
       analyzeBindGroups,
       motionBindGroups,
       reconstructBindGroups,
@@ -460,6 +489,15 @@ export class WebGpuUpscaler {
     }
 
     const encoder = device.createCommandEncoder({ label: 'Web Upscaler temporal frame encoder' })
+    const deblockPass = encoder.beginComputePass({ label: 'Wide codec deblock pass' })
+    deblockPass.setPipeline(this.requireDeblockPipeline())
+    deblockPass.setBindGroup(0, resources.deblockBindGroups[current])
+    deblockPass.dispatchWorkgroups(
+      Math.ceil(resources.inputWidth / 8),
+      Math.ceil(resources.inputHeight / 8),
+    )
+    deblockPass.end()
+
     const analyzePass = encoder.beginComputePass({ label: 'Analyze pass' })
     analyzePass.setPipeline(this.requireAnalyzePipeline())
     analyzePass.setBindGroup(0, resources.analyzeBindGroups[current])
@@ -544,6 +582,11 @@ export class WebGpuUpscaler {
     return this.uniformBuffer
   }
 
+  private requireDeblockPipeline() {
+    if (!this.deblockPipeline) throw new WebGpuUnavailableError('Wide deblock pipeline이 초기화되지 않았습니다.')
+    return this.deblockPipeline
+  }
+
   private requireAnalyzePipeline() {
     if (!this.analyzePipeline) throw new WebGpuUnavailableError('Analyze pipeline이 초기화되지 않았습니다.')
     return this.analyzePipeline
@@ -566,6 +609,7 @@ export class WebGpuUpscaler {
 
   private destroyResources() {
     for (const texture of this.resources?.input ?? []) texture.destroy()
+    for (const texture of this.resources?.filteredInput ?? []) texture.destroy()
     for (const texture of this.resources?.features ?? []) texture.destroy()
     for (const texture of this.resources?.motionStates ?? []) texture.destroy()
     for (const texture of this.resources?.motionMeta ?? []) texture.destroy()

@@ -57,6 +57,7 @@ export class UpscalerController {
 
   updateSettings(settings: BaseUpscalerSettings) {
     const wasEnabled = this.settings.enabled
+    const deblockChanged = this.settings.deblockStrength !== settings.deblockStrength
     this.settings = settings
 
     if (!settings.enabled) {
@@ -72,6 +73,7 @@ export class UpscalerController {
     }
 
     if (!wasEnabled) this.syncVideo(true)
+    if (deblockChanged) this.processor?.resetHistory()
     this.updateDebugOverlay()
   }
 

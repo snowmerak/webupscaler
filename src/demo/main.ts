@@ -14,6 +14,7 @@ const video = required<HTMLVideoElement>('#video')
 const status = required<HTMLElement>('#status')
 const metrics = required<HTMLElement>('#metrics')
 const toggle = required<HTMLButtonElement>('#toggle')
+const deblockToggle = required<HTMLButtonElement>('#deblock-toggle')
 const coverageToggle = required<HTMLButtonElement>('#coverage-toggle')
 function get2dContext(canvas: HTMLCanvasElement) {
   const result = canvas.getContext('2d')
@@ -50,6 +51,8 @@ let running = true
 let inFlight = false
 let processed = 0
 let lastGpuQueueMs: number | null = null
+const deblockLevels = [0, 0.3, 0.5]
+let deblockLevelIndex = 1
 
 function draw(now: number) {
   const elapsed = (now - animationStartedAt) / 1000
@@ -73,6 +76,29 @@ function draw(now: number) {
     }
   }
   context.restore()
+
+  // Static, low-contrast 8px blocks make it easy to compare the dedicated
+  // source-resolution deblock pass without relying on a particular stream.
+  const stressX = width - 164
+  const stressY = 94
+  context.fillStyle = '#69647d'
+  context.fillRect(stressX, stressY, 136, 112)
+  for (let y = 0; y < 112; y += 8) {
+    for (let x = 0; x < 136; x += 8) {
+      const delta = ((x / 8 * 3 + y / 8 * 5) % 5 - 2) * 3
+      context.fillStyle = `rgb(${105 + delta}, ${100 + delta}, ${125 + delta})`
+      context.fillRect(stressX + x, stressY + y, 8, 8)
+    }
+  }
+  context.strokeStyle = 'rgba(255,255,255,.9)'
+  context.lineWidth = 2
+  context.beginPath()
+  context.moveTo(stressX + 12, stressY + 92)
+  context.lineTo(stressX + 124, stressY + 18)
+  context.stroke()
+  context.fillStyle = 'rgba(255,255,255,.72)'
+  context.font = '11px ui-monospace, monospace'
+  context.fillText('8px BLOCK STRESS', stressX + 8, stressY + 16)
 
   const circleX = width * 0.5 + Math.sin(elapsed * 1.4) * width * 0.28
   const circleY = height * 0.5 + Math.cos(elapsed * 1.1) * height * 0.16
@@ -128,6 +154,13 @@ toggle.addEventListener('click', () => {
   } else {
     cancelAnimationFrame(animationFrame)
   }
+})
+
+deblockToggle.addEventListener('click', () => {
+  deblockLevelIndex = (deblockLevelIndex + 1) % deblockLevels.length
+  settings.deblockStrength = deblockLevels[deblockLevelIndex]
+  deblockToggle.textContent = `Deblock ${Math.round(settings.deblockStrength * 100)}%`
+  upscaler.resetHistory()
 })
 
 coverageToggle.addEventListener('click', () => {
