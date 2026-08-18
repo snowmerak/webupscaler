@@ -45,7 +45,7 @@
         <label class="field" for="mode">
           <span>
             <strong>처리 모드</strong>
-            <small>Auto는 화면 크기에 맞춰 자동 조절합니다.</small>
+            <small>2× 복원에 유지할 시간축 관측량을 조절합니다.</small>
           </span>
           <select id="mode">
             <option value="auto">Auto</option>
@@ -54,48 +54,9 @@
           </select>
         </label>
 
-        <label class="range-field" for="sharpness">
-          <span class="range-heading">
-            <span>
-              <strong>샤프닝</strong>
-              <small>경계에만 가볍게 적용합니다.</small>
-            </span>
-            <output id="sharpness-value" for="sharpness">12%</output>
-          </span>
-          <input id="sharpness" type="range" min="0" max="25" step="1" value="12" />
-        </label>
-
-        <label class="range-field" for="deblock-strength">
-          <span class="range-heading">
-            <span>
-              <strong>압축 블록 완화</strong>
-              <small>평탄부의 깍두기를 선택적으로 누그러뜨립니다.</small>
-            </span>
-            <output id="deblock-strength-value" for="deblock-strength">30%</output>
-          </span>
-          <input id="deblock-strength" type="range" min="0" max="50" step="1" value="30" />
-        </label>
-
         <label class="check-row" for="debug-overlay">
           <input id="debug-overlay" type="checkbox" />
           <span>영상 위에 성능 정보 표시</span>
-        </label>
-
-        <label class="field" for="diagnostic-view">
-          <span>
-            <strong>복원 진단</strong>
-            <small>관측과 solver 상태를 화면에 표시합니다.</small>
-          </span>
-          <select id="diagnostic-view">
-            <option value="off">끄기</option>
-            <option value="coverage">Coverage</option>
-            <option value="variance">Variance</option>
-            <option value="samples">Effective samples</option>
-            <option value="residual">Residual 전/후</option>
-            <option value="correction">Correction</option>
-            <option value="motion">Motion confidence</option>
-            <option value="reactive">Reactive mask</option>
-          </select>
         </label>
       </section>
 

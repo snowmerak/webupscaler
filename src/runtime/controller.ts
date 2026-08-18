@@ -62,7 +62,6 @@ export class UpscalerController {
 
   updateSettings(settings: BaseUpscalerSettings) {
     const wasEnabled = this.settings.enabled
-    const deblockChanged = this.settings.deblockStrength !== settings.deblockStrength
     this.settings = settings
 
     if (!settings.enabled) {
@@ -78,7 +77,6 @@ export class UpscalerController {
     }
 
     if (!wasEnabled) this.syncVideo(true)
-    if (deblockChanged) this.processor?.resetHistory()
     this.updateDebugOverlay()
   }
 
@@ -119,6 +117,8 @@ export class UpscalerController {
     candidate.addEventListener('resize', this.handleVideoReset)
     candidate.addEventListener('emptied', this.handleVideoReset)
     candidate.addEventListener('seeking', this.handleHistoryReset)
+    candidate.addEventListener('ended', this.handleVideoEnded)
+    candidate.addEventListener('pause', this.handleVideoPause)
   }
 
   private readonly handleVideoReady = () => {
@@ -139,10 +139,29 @@ export class UpscalerController {
     this.overlay?.hide()
   }
 
+  private readonly handleVideoEnded = () => {
+    // Do not leave the final decoded (often black) frame above the site's
+    // native end screen. A seek/replay will produce a fresh frame and show the
+    // overlay again through processFrame().
+    this.processor?.resetHistory()
+    this.overlay?.hide()
+  }
+
+  private readonly handleVideoPause = () => {
+    if (!this.video || !Number.isFinite(this.video.duration)) return
+    // YouTube can stop a few frames before duration without setting ended.
+    // Treat only a near-end pause as completion; an ordinary user pause keeps
+    // the enhanced still frame visible.
+    if (this.video.duration - this.video.currentTime > 5) return
+    this.handleVideoEnded()
+  }
+
   private attachVideo(video: HTMLVideoElement) {
     video.addEventListener('resize', this.handleVideoReset)
     video.addEventListener('emptied', this.handleVideoReset)
     video.addEventListener('seeking', this.handleHistoryReset)
+    video.addEventListener('ended', this.handleVideoEnded)
+    video.addEventListener('pause', this.handleVideoPause)
     const host = this.options.adapter.getOverlayHost(video)
     this.overlay = new OverlayController(video, host)
     this.processor = this.createProcessor(this.overlay.canvas)
@@ -230,7 +249,7 @@ export class UpscalerController {
           'Web Upscaler v2',
           `Source ${metrics.sourceWidth}×${metrics.sourceHeight}`,
           `Internal ${metrics.outputWidth}×${metrics.outputHeight}`,
-          `Display ${metrics.presentationWidth}×${metrics.presentationHeight}`,
+          `Canvas ${metrics.presentationWidth}×${metrics.presentationHeight}`,
           `Mode ${this.settings.mode}`,
           `GPU queue ${metrics.gpuQueueMs.toFixed(1)} ms / p90 ${metrics.gpuQueueP90Ms.toFixed(1)} ms`,
           `Pending ${metrics.pendingSubmissions}/2`,
@@ -264,6 +283,7 @@ export class UpscalerController {
   private handleFrameError(error: unknown) {
     this.scheduler?.stop()
     this.overlay?.hide()
+    console.error('[Web Upscaler] frame processing failed', error)
 
     let errorCode = 'UNKNOWN'
     let message = error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.'
@@ -300,6 +320,8 @@ export class UpscalerController {
       this.video.removeEventListener('resize', this.handleVideoReset)
       this.video.removeEventListener('emptied', this.handleVideoReset)
       this.video.removeEventListener('seeking', this.handleHistoryReset)
+      this.video.removeEventListener('ended', this.handleVideoEnded)
+      this.video.removeEventListener('pause', this.handleVideoPause)
     }
     this.scheduler?.stop()
     this.processor?.destroy()

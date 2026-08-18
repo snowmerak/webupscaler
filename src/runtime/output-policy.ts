@@ -6,7 +6,7 @@ export interface OutputTarget {
   width: number
   height: number
   scale: number
-  /** Canvas backing size matched to the on-screen player. */
+  /** Canvas backing size, capped at the exact 2x reconstruction lattice. */
   presentationWidth: number
   presentationHeight: number
 }
@@ -41,12 +41,21 @@ export function calculateOutputTarget(
     return { kind: 'bypass', reason: 'pixel-budget-exceeded' }
   }
 
+  // Never render more fragment invocations than the reconstructed 2x lattice.
+  // The browser compositor handles only the unavoidable final enlargement
+  // when the physical player is larger than the recovered lattice.
+  const canvasScale = Math.min(
+    1,
+    width / displayWidth,
+    height / displayHeight,
+  )
+
   return {
     kind: 'upscale',
     width,
     height,
     scale,
-    presentationWidth: floorEven(displayWidth),
-    presentationHeight: floorEven(displayHeight),
+    presentationWidth: floorEven(displayWidth * canvasScale),
+    presentationHeight: floorEven(displayHeight * canvasScale),
   }
 }

@@ -1,5 +1,5 @@
 import { WebGpuUpscaler } from '../gpu/webgpu-upscaler'
-import type { BaseUpscalerSettings, DiagnosticView } from '../shared/settings'
+import type { BaseUpscalerSettings } from '../shared/settings'
 import './style.css'
 
 function required<T extends Element>(selector: string) {
@@ -14,8 +14,7 @@ const video = required<HTMLVideoElement>('#video')
 const status = required<HTMLElement>('#status')
 const metrics = required<HTMLElement>('#metrics')
 const toggle = required<HTMLButtonElement>('#toggle')
-const deblockToggle = required<HTMLButtonElement>('#deblock-toggle')
-const coverageToggle = required<HTMLButtonElement>('#coverage-toggle')
+const resetHistory = required<HTMLButtonElement>('#reset-history')
 function get2dContext(canvas: HTMLCanvasElement) {
   const result = canvas.getContext('2d')
   if (!result) throw new Error('2D canvas를 초기화하지 못했습니다.')
@@ -28,10 +27,7 @@ const settings: BaseUpscalerSettings = {
   enabled: true,
   mode: 'balanced',
   requestedScale: 2,
-  sharpness: 0.12,
-  deblockStrength: 0.3,
   debugOverlay: false,
-  diagnosticView: 'off',
 }
 const target = {
   kind: 'upscale',
@@ -51,20 +47,6 @@ let running = true
 let inFlight = false
 let processed = 0
 let lastGpuQueueMs: number | null = null
-const deblockLevels = [0, 0.3, 0.5]
-let deblockLevelIndex = 1
-const diagnosticViews: Array<{ value: DiagnosticView; label: string }> = [
-  { value: 'off', label: '복원 진단: 끄기' },
-  { value: 'coverage', label: '복원 진단: Coverage' },
-  { value: 'variance', label: '복원 진단: Variance' },
-  { value: 'samples', label: '복원 진단: Samples' },
-  { value: 'residual', label: '복원 진단: Residual' },
-  { value: 'correction', label: '복원 진단: Correction' },
-  { value: 'motion', label: '복원 진단: Motion' },
-  { value: 'reactive', label: '복원 진단: Reactive' },
-]
-let diagnosticViewIndex = 0
-
 function draw(now: number) {
   const elapsed = (now - animationStartedAt) / 1000
   const width = source.width
@@ -88,8 +70,7 @@ function draw(now: number) {
   }
   context.restore()
 
-  // Static, low-contrast 8px blocks make it easy to compare the dedicated
-  // source-resolution deblock pass without relying on a particular stream.
+  // Static low-contrast blocks expose resampling blur and temporal instability.
   const stressX = width - 164
   const stressY = 94
   context.fillStyle = '#69647d'
@@ -180,18 +161,12 @@ toggle.addEventListener('click', () => {
   }
 })
 
-deblockToggle.addEventListener('click', () => {
-  deblockLevelIndex = (deblockLevelIndex + 1) % deblockLevels.length
-  settings.deblockStrength = deblockLevels[deblockLevelIndex]
-  deblockToggle.textContent = `Deblock ${Math.round(settings.deblockStrength * 100)}%`
+resetHistory.addEventListener('click', () => {
   upscaler.resetHistory()
-})
-
-coverageToggle.addEventListener('click', () => {
-  diagnosticViewIndex = (diagnosticViewIndex + 1) % diagnosticViews.length
-  const diagnostic = diagnosticViews[diagnosticViewIndex]
-  settings.diagnosticView = diagnostic.value
-  coverageToggle.textContent = diagnostic.label
+  resetHistory.textContent = 'History reset 완료'
+  window.setTimeout(() => {
+    resetHistory.textContent = 'History reset'
+  }, 800)
 })
 
 async function initialize() {
