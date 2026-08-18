@@ -70,22 +70,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let localRange = maximumLuma - minimumLuma;
   let residual = abs(centerLuma - luma(filtered));
   let flatMask = 1.0 - smoothstep(0.022, 0.105, localRange);
-  let gradientMagnitude = select(
-    abs(bottomLuma - topLuma),
-    abs(rightLuma - leftLuma),
-    useHorizontal,
-  ) * 0.5;
-  let selectedCurvature = select(
-    verticalCurvature,
-    horizontalCurvature,
-    useHorizontal,
-  );
-  let gradientContinuity = 1.0 - smoothstep(
-    0.006,
-    0.030,
-    selectedCurvature,
-  );
-  let gradientEvidence = smoothstep(0.0008, 0.012, gradientMagnitude);
   let noiseEvidence = smoothstep(0.0025, 0.020, residual);
   let ringEvidence = smoothstep(0.009, 0.050, residual)
     * (1.0 - smoothstep(0.085, 0.180, localRange));
@@ -94,18 +78,13 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     select(0.88, 0.62, uniforms.flags.y > 1.5),
     uniforms.flags.y > 0.5,
   );
-  // The +/-2 footprint stays on the same phase of the 2x lattice. Only the
-  // lower-curvature axis contributes, so synthesized subpixels are not mixed
-  // across a real edge merely because the perpendicular direction is flat.
-  let gradientSmoothing = flatMask * gradientContinuity
-    * (0.14 + 0.22 * gradientEvidence);
+  // Broad gradient flattening now happens on the source-resolution frames
+  // before motion analysis. At 2x, only evidence-backed noise and ringing are
+  // reduced so reconstructed subpixels are not softened a second time.
   let smoothing = clamp(
-    (
-      gradientSmoothing
-      + flatMask * (0.92 * noiseEvidence + 0.62 * ringEvidence)
-    ) * modeScale,
+    flatMask * (0.92 * noiseEvidence + 0.62 * ringEvidence) * modeScale,
     0.0,
-    0.78,
+    0.72,
   );
   let candidate = mix(center, filtered, smoothing);
   let allowance = (maximum - minimum) * 0.025 + vec3<f32>(0.0005);
