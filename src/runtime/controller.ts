@@ -257,7 +257,7 @@ export class UpscalerController {
           `Canvas ${metrics.presentationWidth}×${metrics.presentationHeight}`,
           `Mode ${this.settings.mode}`,
           `GPU queue ${metrics.gpuQueueMs.toFixed(1)} ms / p90 ${metrics.gpuQueueP90Ms.toFixed(1)} ms`,
-          `Pending ${metrics.pendingSubmissions}/2`,
+          `Pending ${metrics.pendingSubmissions}/${WebGpuUpscaler.MAX_PENDING_SUBMISSIONS}`,
           `Skipped ${metrics.skippedFrames}`,
           `History resets ${metrics.historyResets}`,
         ].join('\n')

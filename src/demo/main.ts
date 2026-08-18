@@ -140,7 +140,7 @@ async function processFrame() {
     status.textContent = '실행 중'
     status.dataset.tone = 'running'
     const gpuTime = lastGpuQueueMs === null ? '측정 대기' : `${lastGpuQueueMs.toFixed(1)} ms`
-    metrics.textContent = `내부 ${target.width}×${target.height} → 표시 ${target.presentationWidth}×${target.presentationHeight} · 처리 ${processed.toLocaleString()} 프레임 · GPU queue ${gpuTime} · pending ${result.pendingSubmissions}/2${result.historyReset ? ' · history reset' : ''}`
+    metrics.textContent = `내부 ${target.width}×${target.height} → 표시 ${target.presentationWidth}×${target.presentationHeight} · 처리 ${processed.toLocaleString()} 프레임 · GPU queue ${gpuTime} · pending ${result.pendingSubmissions}/${WebGpuUpscaler.MAX_PENDING_SUBMISSIONS}${result.historyReset ? ' · history reset' : ''}`
   } catch (error) {
     status.textContent = '실행 오류'
     status.dataset.tone = 'error'

@@ -4,9 +4,11 @@ import analyzeShader from './shaders/analyze.wgsl?raw'
 import compositeShader from './shaders/composite.wgsl?raw'
 import deblockShader from './shaders/deblock.wgsl?raw'
 import enhanceShader from './shaders/enhance.wgsl?raw'
+import microContrastShader from './shaders/micro-contrast.wgsl?raw'
 import motionShader from './shaders/motion.wgsl?raw'
 import reconstructShader from './shaders/reconstruct.wgsl?raw'
 import refineShader from './shaders/refine.wgsl?raw'
+import shockShader from './shaders/shock.wgsl?raw'
 
 type Pair<T> = [T, T]
 
@@ -29,12 +31,16 @@ interface GpuResources {
   motionMeta: Pair<GPUTexture>
   reconstruction: Pair<GPUTexture>
   refined: Pair<GPUTexture>
+  microDetailed: Pair<GPUTexture>
+  shocked: Pair<GPUTexture>
   enhanced: Pair<GPUTexture>
   deblockBindGroups: Pair<GPUBindGroup>
   analyzeBindGroups: Pair<GPUBindGroup>
   motionBindGroups: Pair<GPUBindGroup>
   reconstructBindGroups: Pair<GPUBindGroup>
   refineBindGroups: Pair<GPUBindGroup>
+  microContrastBindGroups: Pair<GPUBindGroup>
+  shockBindGroups: Pair<GPUBindGroup>
   enhanceBindGroups: Pair<GPUBindGroup>
   compositeBindGroups: Pair<GPUBindGroup>
   inputWidth: number
@@ -66,7 +72,7 @@ export class ShaderCompilationError extends Error {
 }
 
 export class WebGpuUpscaler {
-  private static readonly MAX_PENDING_SUBMISSIONS = 2
+  static readonly MAX_PENDING_SUBMISSIONS = 8
   private static readonly GPU_SAMPLE_BATCH_INTERVAL = 8
   private adapter: GPUAdapter | null = null
   private device: GPUDevice | null = null
@@ -79,6 +85,8 @@ export class WebGpuUpscaler {
   private motionPipeline: GPUComputePipeline | null = null
   private reconstructPipeline: GPUComputePipeline | null = null
   private refinePipeline: GPUComputePipeline | null = null
+  private microContrastPipeline: GPUComputePipeline | null = null
+  private shockPipeline: GPUComputePipeline | null = null
   private enhancePipeline: GPUComputePipeline | null = null
   private compositePipeline: GPURenderPipeline | null = null
   private resources: GpuResources | null = null
@@ -152,6 +160,8 @@ export class WebGpuUpscaler {
     const motionModule = this.device.createShaderModule({ label: 'Motion shader', code: motionShader })
     const reconstructModule = this.device.createShaderModule({ label: 'Temporal reconstruct shader', code: reconstructShader })
     const refineModule = this.device.createShaderModule({ label: 'Flat-region refinement shader', code: refineShader })
+    const microContrastModule = this.device.createShaderModule({ label: 'Micro-contrast shader', code: microContrastShader })
+    const shockModule = this.device.createShaderModule({ label: 'Shock edge-compression shader', code: shockShader })
     const enhanceModule = this.device.createShaderModule({ label: 'Contrast and sharpening shader', code: enhanceShader })
     const compositeModule = this.device.createShaderModule({ label: 'Composite shader', code: compositeShader })
     await Promise.all([
@@ -160,6 +170,8 @@ export class WebGpuUpscaler {
       this.assertShader(motionModule, 'Motion'),
       this.assertShader(reconstructModule, 'Temporal reconstruct'),
       this.assertShader(refineModule, 'Flat-region refinement'),
+      this.assertShader(microContrastModule, 'Micro-contrast'),
+      this.assertShader(shockModule, 'Shock edge compression'),
       this.assertShader(enhanceModule, 'Contrast and sharpening'),
       this.assertShader(compositeModule, 'Composite'),
     ])
@@ -188,6 +200,16 @@ export class WebGpuUpscaler {
       label: 'Flat-region refinement pipeline',
       layout: 'auto',
       compute: { module: refineModule, entryPoint: 'main' },
+    })
+    this.microContrastPipeline = await this.device.createComputePipelineAsync({
+      label: 'Aggressive micro-contrast pipeline',
+      layout: 'auto',
+      compute: { module: microContrastModule, entryPoint: 'main' },
+    })
+    this.shockPipeline = await this.device.createComputePipelineAsync({
+      label: 'Shock edge-compression pipeline',
+      layout: 'auto',
+      compute: { module: shockModule, entryPoint: 'main' },
     })
     this.enhancePipeline = await this.device.createComputePipelineAsync({
       label: 'Local contrast and sharpening pipeline',
@@ -299,6 +321,18 @@ export class WebGpuUpscaler {
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }))
+    const microDetailed = this.pair((index) => device.createTexture({
+      label: `Micro-contrast detailed lattice ${index}`,
+      size: [target.width, target.height],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
+    const shocked = this.pair((index) => device.createTexture({
+      label: `Shock-compressed edge lattice ${index}`,
+      size: [target.width, target.height],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
     const enhanced = this.pair((index) => device.createTexture({
       label: `Contrast and sharpened lattice ${index}`,
       size: [target.width, target.height],
@@ -318,6 +352,8 @@ export class WebGpuUpscaler {
     const motionPipeline = this.requireMotionPipeline()
     const reconstructPipeline = this.requireReconstructPipeline()
     const refinePipeline = this.requireRefinePipeline()
+    const microContrastPipeline = this.requireMicroContrastPipeline()
+    const shockPipeline = this.requireShockPipeline()
     const enhancePipeline = this.requireEnhancePipeline()
     const compositePipeline = this.requireCompositePipeline()
     const deblockBindGroups = this.pair((current) => device.createBindGroup({
@@ -382,11 +418,29 @@ export class WebGpuUpscaler {
         { binding: 2, resource: { buffer: uniformBuffer } },
       ],
     }))
+    const microContrastBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Micro-contrast bind group ${current}`,
+      layout: microContrastPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: refined[current].createView() },
+        { binding: 1, resource: microDetailed[current].createView() },
+        { binding: 2, resource: { buffer: uniformBuffer } },
+      ],
+    }))
+    const shockBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Shock edge-compression bind group ${current}`,
+      layout: shockPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: microDetailed[current].createView() },
+        { binding: 1, resource: shocked[current].createView() },
+        { binding: 2, resource: { buffer: uniformBuffer } },
+      ],
+    }))
     const enhanceBindGroups = this.pair((current) => device.createBindGroup({
       label: `Contrast and sharpening bind group ${current}`,
       layout: enhancePipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: refined[current].createView() },
+        { binding: 0, resource: shocked[current].createView() },
         { binding: 1, resource: enhanced[current].createView() },
         { binding: 2, resource: { buffer: uniformBuffer } },
       ],
@@ -408,12 +462,16 @@ export class WebGpuUpscaler {
       motionMeta,
       reconstruction,
       refined,
+      microDetailed,
+      shocked,
       enhanced,
       deblockBindGroups,
       analyzeBindGroups,
       motionBindGroups,
       reconstructBindGroups,
       refineBindGroups,
+      microContrastBindGroups,
+      shockBindGroups,
       enhanceBindGroups,
       compositeBindGroups,
       inputWidth: video.videoWidth,
@@ -622,6 +680,18 @@ export class WebGpuUpscaler {
     refinePass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
     refinePass.end()
 
+    const microContrastPass = encoder.beginComputePass({ label: 'Aggressive micro-contrast pass' })
+    microContrastPass.setPipeline(this.requireMicroContrastPipeline())
+    microContrastPass.setBindGroup(0, resources.microContrastBindGroups[center])
+    microContrastPass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
+    microContrastPass.end()
+
+    const shockPass = encoder.beginComputePass({ label: 'Shock edge-compression pass' })
+    shockPass.setPipeline(this.requireShockPipeline())
+    shockPass.setBindGroup(0, resources.shockBindGroups[center])
+    shockPass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
+    shockPass.end()
+
     const enhancePass = encoder.beginComputePass({ label: 'Local contrast, text clarity, and sharpening pass' })
     enhancePass.setPipeline(this.requireEnhancePipeline())
     enhancePass.setBindGroup(0, resources.enhanceBindGroups[center])
@@ -728,6 +798,16 @@ export class WebGpuUpscaler {
     return this.refinePipeline
   }
 
+  private requireMicroContrastPipeline() {
+    if (!this.microContrastPipeline) throw new WebGpuUnavailableError('Micro-contrast pipeline is not initialized.')
+    return this.microContrastPipeline
+  }
+
+  private requireShockPipeline() {
+    if (!this.shockPipeline) throw new WebGpuUnavailableError('Shock pipeline is not initialized.')
+    return this.shockPipeline
+  }
+
   private requireEnhancePipeline() {
     if (!this.enhancePipeline) throw new WebGpuUnavailableError('Enhancement pipeline이 초기화되지 않았습니다.')
     return this.enhancePipeline
@@ -746,6 +826,8 @@ export class WebGpuUpscaler {
     for (const texture of this.resources?.motionMeta ?? []) texture.destroy()
     for (const texture of this.resources?.reconstruction ?? []) texture.destroy()
     for (const texture of this.resources?.refined ?? []) texture.destroy()
+    for (const texture of this.resources?.microDetailed ?? []) texture.destroy()
+    for (const texture of this.resources?.shocked ?? []) texture.destroy()
     for (const texture of this.resources?.enhanced ?? []) texture.destroy()
     this.resources = null
   }
