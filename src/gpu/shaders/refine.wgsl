@@ -13,9 +13,9 @@ struct FrameUniforms {
 @group(0) @binding(2) var<uniform> uniforms: FrameUniforms;
 
 const OFFSETS = array<vec2<i32>, 4>(
-  vec2<i32>(0, -1),
-  vec2<i32>(-1, 0), vec2<i32>(1, 0),
-  vec2<i32>(0, 1),
+  vec2<i32>(0, -2),
+  vec2<i32>(-2, 0), vec2<i32>(2, 0),
+  vec2<i32>(0, 2),
 );
 
 fn luma(color: vec3<f32>) -> f32 {
@@ -41,50 +41,49 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let position = vec2<i32>(id.xy);
   let center = loadFrame(position);
   let centerLuma = luma(center);
-  let samples = array<vec3<f32>, 4>(
-    loadFrame(position + OFFSETS[0]),
-    loadFrame(position + OFFSETS[1]),
-    loadFrame(position + OFFSETS[2]),
-    loadFrame(position + OFFSETS[3]),
-  );
-  var filtered = center * 2.0;
-  var weightSum = 2.0;
-  var minimum = center;
-  var maximum = center;
-  var minimumLuma = centerLuma;
-  var maximumLuma = centerLuma;
-
-  for (var index = 0u; index < 4u; index += 1u) {
-    let sample = samples[index];
-    let sampleLuma = luma(sample);
-    let rangeWeight = exp(-abs(sampleLuma - centerLuma) * 34.0);
-    let weight = rangeWeight;
-    filtered += sample * weight;
-    weightSum += weight;
-    minimum = min(minimum, sample);
-    maximum = max(maximum, sample);
-    minimumLuma = min(minimumLuma, sampleLuma);
-    maximumLuma = max(maximumLuma, sampleLuma);
-  }
-
-  filtered /= max(weightSum, 0.0001);
+  let top = loadFrame(position + OFFSETS[0]);
+  let left = loadFrame(position + OFFSETS[1]);
+  let right = loadFrame(position + OFFSETS[2]);
+  let bottom = loadFrame(position + OFFSETS[3]);
+  let topLuma = luma(top);
+  let leftLuma = luma(left);
+  let rightLuma = luma(right);
+  let bottomLuma = luma(bottom);
+  let topWeight = exp(-abs(topLuma - centerLuma) * 34.0);
+  let leftWeight = exp(-abs(leftLuma - centerLuma) * 34.0);
+  let rightWeight = exp(-abs(rightLuma - centerLuma) * 34.0);
+  let bottomWeight = exp(-abs(bottomLuma - centerLuma) * 34.0);
+  let horizontalFiltered = (
+    center * 2.0 + left * leftWeight + right * rightWeight
+  ) / max(2.0 + leftWeight + rightWeight, 0.0001);
+  let verticalFiltered = (
+    center * 2.0 + top * topWeight + bottom * bottomWeight
+  ) / max(2.0 + topWeight + bottomWeight, 0.0001);
+  let horizontalCurvature = abs(leftLuma + rightLuma - 2.0 * centerLuma);
+  let verticalCurvature = abs(topLuma + bottomLuma - 2.0 * centerLuma);
+  let useHorizontal = horizontalCurvature <= verticalCurvature;
+  let filtered = select(verticalFiltered, horizontalFiltered, useHorizontal);
+  let minimum = min(center, min(min(top, bottom), min(left, right)));
+  let maximum = max(center, max(max(top, bottom), max(left, right)));
+  let minimumLuma = min(centerLuma, min(min(topLuma, bottomLuma), min(leftLuma, rightLuma)));
+  let maximumLuma = max(centerLuma, max(max(topLuma, bottomLuma), max(leftLuma, rightLuma)));
   let localRange = maximumLuma - minimumLuma;
   let residual = abs(centerLuma - luma(filtered));
   let flatMask = 1.0 - smoothstep(0.022, 0.105, localRange);
-  let horizontalCurvature = abs(
-    luma(samples[1]) + luma(samples[2]) - 2.0 * centerLuma
-  );
-  let verticalCurvature = abs(
-    luma(samples[0]) + luma(samples[3]) - 2.0 * centerLuma
-  );
-  let gradientMagnitude = max(
-    abs(luma(samples[2]) - luma(samples[1])),
-    abs(luma(samples[3]) - luma(samples[0])),
+  let gradientMagnitude = select(
+    abs(bottomLuma - topLuma),
+    abs(rightLuma - leftLuma),
+    useHorizontal,
   ) * 0.5;
+  let selectedCurvature = select(
+    verticalCurvature,
+    horizontalCurvature,
+    useHorizontal,
+  );
   let gradientContinuity = 1.0 - smoothstep(
     0.006,
     0.030,
-    min(horizontalCurvature, verticalCurvature),
+    selectedCurvature,
   );
   let gradientEvidence = smoothstep(0.0008, 0.012, gradientMagnitude);
   let noiseEvidence = smoothstep(0.0025, 0.020, residual);
@@ -95,9 +94,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     select(0.88, 0.62, uniforms.flags.y > 1.5),
     uniforms.flags.y > 0.5,
   );
-  // A small continuous-tone contribution joins quantized steps in walls,
-  // skin and other broad gradients. Curvature and range masks keep it away
-  // from text and real object boundaries.
+  // The +/-2 footprint stays on the same phase of the 2x lattice. Only the
+  // lower-curvature axis contributes, so synthesized subpixels are not mixed
+  // across a real edge merely because the perpendicular direction is flat.
   let gradientSmoothing = flatMask * gradientContinuity
     * (0.14 + 0.22 * gradientEvidence);
   let smoothing = clamp(
