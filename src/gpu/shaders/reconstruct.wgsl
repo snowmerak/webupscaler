@@ -27,6 +27,13 @@ fn finiteVec4(value: vec4<f32>) -> bool {
   return all(value == value) && all(abs(value) <= vec4<f32>(65504.0));
 }
 
+struct KernelAccumulation {
+  premultiplied: vec3<f32>,
+  weight: f32,
+  minimum: vec3<f32>,
+  maximum: vec3<f32>,
+}
+
 fn loadInput(position: vec2<i32>) -> vec3<f32> {
   let maximum = vec2<i32>(uniforms.inputSize.xy) - vec2<i32>(1);
   return textureLoad(
@@ -57,33 +64,54 @@ fn lanczos2Weight(distance: f32) -> f32 {
   return sin(pix) * sin(pix * 0.5) / (pix * pix * 0.5);
 }
 
-// Build a bounded spatial value only for lattice sites that no real decoded
-// sample observes. Integer source positions are handled separately below and
-// never pass through this filter.
-fn spatialTwoX(sourceCoordinate: vec2<f32>) -> vec3<f32> {
-  let base = vec2<i32>(floor(sourceCoordinate));
-  let phase = fract(sourceCoordinate);
-  var result = vec3<f32>(0.0);
-  var weightSum = 0.0;
+fn currentKernel(coordinate: vec2<f32>) -> KernelAccumulation {
+  let base = vec2<i32>(floor(coordinate));
+  let phase = fract(coordinate);
+  var accumulation = KernelAccumulation(
+    vec3<f32>(0.0),
+    0.0,
+    vec3<f32>(1.0),
+    vec3<f32>(0.0),
+  );
 
   for (var y = -1; y <= 2; y += 1) {
     let weightY = lanczos2Weight(f32(y) - phase.y);
     for (var x = -1; x <= 2; x += 1) {
       let weight = lanczos2Weight(f32(x) - phase.x) * weightY;
-      result += loadInput(base + vec2<i32>(x, y)) * weight;
-      weightSum += weight;
+      let sample = loadInput(base + vec2<i32>(x, y));
+      accumulation.premultiplied += sample * weight;
+      accumulation.weight += weight;
+      accumulation.minimum = min(accumulation.minimum, sample);
+      accumulation.maximum = max(accumulation.maximum, sample);
     }
   }
 
-  let filtered = result / max(weightSum, 0.0001);
-  let a = loadInput(base);
-  let b = loadInput(base + vec2<i32>(1, 0));
-  let c = loadInput(base + vec2<i32>(0, 1));
-  let d = loadInput(base + vec2<i32>(1, 1));
-  let minimum = min(min(a, b), min(c, d));
-  let maximum = max(max(a, b), max(c, d));
-  let allowance = (maximum - minimum) * 0.04 + vec3<f32>(0.001);
-  return clamp(filtered, minimum - allowance, maximum + allowance);
+  return accumulation;
+}
+
+fn futureKernel(coordinate: vec2<f32>) -> KernelAccumulation {
+  let base = vec2<i32>(floor(coordinate));
+  let phase = fract(coordinate);
+  var accumulation = KernelAccumulation(
+    vec3<f32>(0.0),
+    0.0,
+    vec3<f32>(1.0),
+    vec3<f32>(0.0),
+  );
+
+  for (var y = -1; y <= 2; y += 1) {
+    let weightY = lanczos2Weight(f32(y) - phase.y);
+    for (var x = -1; x <= 2; x += 1) {
+      let weight = lanczos2Weight(f32(x) - phase.x) * weightY;
+      let sample = loadFuture(base + vec2<i32>(x, y));
+      accumulation.premultiplied += sample * weight;
+      accumulation.weight += weight;
+      accumulation.minimum = min(accumulation.minimum, sample);
+      accumulation.maximum = max(accumulation.maximum, sample);
+    }
+  }
+
+  return accumulation;
 }
 
 @compute @workgroup_size(8, 8)
@@ -112,7 +140,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     return;
   }
 
-  let spatial = spatialTwoX(sourceCoordinate);
+  let current = currentKernel(sourceCoordinate);
+  let spatial = current.premultiplied / max(current.weight, 0.0001);
   let sourceUv = (sourceCoordinate + vec2<f32>(0.5)) * uniforms.inputSize.zw;
   let sampledMotion = textureSampleLevel(
     motionMetaCurrent,
@@ -126,35 +155,55 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     finiteVec4(sampledMotion),
   );
 
-  // motion.xy maps a center-frame coordinate to the next decoded frame. If
-  // that mapped coordinate lands close to an integer LR sample, the future
-  // frame contains a real observation for this otherwise-empty 2x site.
+  // motion.xy maps center-frame coordinates into the next decoded frame. The
+  // future Lanczos footprint is therefore sampled around x + motion instead
+  // of selecting only the rare position that lands exactly on an LR pixel.
   let futureCoordinate = sourceCoordinate + motion.xy;
-  let futureSample = vec2<i32>(round(futureCoordinate));
+  let future = futureKernel(futureCoordinate);
+  let futureFiltered = future.premultiplied / max(future.weight, 0.0001);
   let futurePhase = futureCoordinate - round(futureCoordinate);
-  let futurePhaseCoverage = exp(-16.0 * dot(futurePhase, futurePhase));
-  let futureInBounds = all(futureSample >= vec2<i32>(0))
-    && all(futureSample < vec2<i32>(uniforms.inputSize.xy));
+  let futurePhaseCoverage = exp(-12.0 * dot(futurePhase, futurePhase));
+  let futureInBounds = all(futureCoordinate >= vec2<f32>(-0.5))
+    && all(futureCoordinate <= uniforms.inputSize.xy - vec2<f32>(0.5));
   let motionConfidence = clamp(motion.z, 0.0, 1.0);
   let matchTrust = 1.0 - smoothstep(0.18, 0.72, motion.w);
-  let futureObservation = loadFuture(futureSample);
-  let photoError = abs(luma(futureObservation) - luma(spatial));
-  let photoConsistent = photoError < 0.32;
+  let photoError = abs(luma(futureFiltered) - luma(spatial));
+  let photoTrust = 1.0 - smoothstep(0.08, 0.32, photoError);
+  let phaseGain = mix(0.35, 1.50, futurePhaseCoverage);
+  let temporalValid = futureInBounds
+    && finiteVec3(spatial)
+    && finiteVec3(futureFiltered);
+  let temporalScale = select(
+    0.0,
+    clamp(1.25 * motionConfidence * matchTrust * photoTrust * phaseGain, 0.0, 1.75),
+    temporalValid,
+  );
 
-  // This is deliberately a selection, not an average: an accepted decoded
-  // sample replaces the placeholder; otherwise Lanczos remains untouched.
-  let futureObserved = futureInBounds
-    && futurePhaseCoverage >= 0.35
-    && motionConfidence >= 0.08
-    && matchTrust >= 0.30
-    && photoConsistent
-    && finiteVec3(futureObservation);
-  let resolved = select(spatial, futureObservation, futureObserved);
-  let observationMask = select(0.0, 1.0, futureObserved);
+  // Current and warped-future decoded samples share one normalized Lanczos
+  // accumulation. This uses temporal evidence to construct every missing 2x
+  // lattice site while exact current-frame sites remain untouched above.
+  let combinedWeight = current.weight + future.weight * temporalScale;
+  let combined = (
+    current.premultiplied + future.premultiplied * temporalScale
+  ) / max(combinedWeight, 0.0001);
+  let localMinimum = select(
+    current.minimum,
+    min(current.minimum, future.minimum),
+    temporalScale > 0.0001,
+  );
+  let localMaximum = select(
+    current.maximum,
+    max(current.maximum, future.maximum),
+    temporalScale > 0.0001,
+  );
+  let allowance = (localMaximum - localMinimum) * 0.04 + vec3<f32>(0.001);
+  let bounded = clamp(combined, localMinimum - allowance, localMaximum + allowance);
+  let resolved = select(spatial, bounded, finiteVec3(bounded));
+  let temporalContribution = temporalScale / (1.0 + temporalScale);
 
   textureStore(
     reconstruction,
     vec2<i32>(id.xy),
-    vec4<f32>(clamp(resolved, vec3<f32>(0.0), vec3<f32>(1.0)), observationMask),
+    vec4<f32>(clamp(resolved, vec3<f32>(0.0), vec3<f32>(1.0)), temporalContribution),
   );
 }
