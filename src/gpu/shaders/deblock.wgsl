@@ -29,42 +29,44 @@ fn axisOffset(horizontal: bool, amount: i32) -> vec2<i32> {
   return select(vec2<i32>(0, amount), vec2<i32>(amount, 0), horizontal);
 }
 
-// Estimate a codec transform boundary on the four-pixel grid. A real image
-// edge normally has supporting gradients on both sides; a block seam has a
-// large isolated step between two comparatively flat plateaus.
-fn boundaryCorrection(position: vec2<i32>, horizontal: bool) -> vec3<f32> {
-  let coordinate = select(position.y, position.x, horizontal);
-  let boundary = ((coordinate + 2) / 4) * 4;
-  let boundaryPosition = select(
-    vec2<i32>(position.x, boundary),
-    vec2<i32>(boundary, position.y),
-    horizontal,
+// A block seam is an isolated moderate step between two locally flat
+// plateaus. There is deliberately no fixed 4/8-pixel phase here: modern AV1
+// transform partitions are variable, and a hard grid creates visible bands
+// on clean gradients.
+fn seamEvidence(
+  leftOuter: vec3<f32>,
+  left: vec3<f32>,
+  right: vec3<f32>,
+  rightOuter: vec3<f32>,
+) -> f32 {
+  let seam = abs(luma(right) - luma(left));
+  let shoulder = max(
+    abs(luma(left) - luma(leftOuter)),
+    abs(luma(rightOuter) - luma(right)),
   );
+  let isolatedStep = seam - shoulder * 1.75;
+  let plateauTrust = 1.0 - smoothstep(0.025, 0.075, shoulder);
+  let edgeProtection = 1.0 - smoothstep(0.095, 0.220, seam);
+  let chromaProtection = 1.0 - smoothstep(0.10, 0.28, length(right - left));
+  return smoothstep(0.012, 0.060, isolatedStep)
+    * plateauTrust
+    * edgeProtection
+    * chromaProtection;
+}
 
-  let a2 = loadInput(boundaryPosition + axisOffset(horizontal, -2));
-  let a1 = loadInput(boundaryPosition + axisOffset(horizontal, -1));
-  let b0 = loadInput(boundaryPosition);
-  let b1 = loadInput(boundaryPosition + axisOffset(horizontal, 1));
-  let seam = abs(luma(b0) - luma(a1));
-  let shoulders = 0.5 * (
-    abs(luma(a1) - luma(a2)) + abs(luma(b1) - luma(b0))
-  );
-  let isolatedStep = seam - shoulders * 1.20;
-  let blockEvidence = smoothstep(0.003, 0.045, isolatedStep)
-    * (1.0 - smoothstep(0.10, 0.24, seam))
-    * (1.0 - smoothstep(0.14, 0.32, length(b0 - a1)));
-
+fn axisCorrection(position: vec2<i32>, horizontal: bool) -> vec3<f32> {
+  let axis = axisOffset(horizontal, 1);
   let center = loadInput(position);
-  let n2 = loadInput(position + axisOffset(horizontal, -2));
-  let n1 = loadInput(position + axisOffset(horizontal, -1));
-  let p1 = loadInput(position + axisOffset(horizontal, 1));
-  let p2 = loadInput(position + axisOffset(horizontal, 2));
-  let lowPass = (n2 + n1 * 2.0 + center * 2.0 + p1 * 2.0 + p2) * 0.125;
-  let boundaryCenter = f32(boundary) - 0.5;
-  let distanceToBoundary = abs(f32(coordinate) - boundaryCenter);
-  let boundaryInfluence = 1.0 - smoothstep(0.5, 2.5, distanceToBoundary);
+  let negativeOne = loadInput(position - axis);
+  let negativeTwo = loadInput(position - axis * 2);
+  let positiveOne = loadInput(position + axis);
+  let positiveTwo = loadInput(position + axis * 2);
 
-  return (lowPass - center) * blockEvidence * boundaryInfluence;
+  let leftSeam = seamEvidence(negativeTwo, negativeOne, center, positiveOne);
+  let rightSeam = seamEvidence(negativeOne, center, positiveOne, positiveTwo);
+  let leftDelta = (center - negativeOne) * 0.5;
+  let rightDelta = (positiveOne - center) * 0.5;
+  return rightDelta * rightSeam - leftDelta * leftSeam;
 }
 
 @compute @workgroup_size(8, 8)
@@ -76,11 +78,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
   let position = vec2<i32>(id.xy);
   let center = loadInput(position);
-  let horizontal = boundaryCorrection(position, true);
-  let vertical = boundaryCorrection(position, false);
+  let horizontal = axisCorrection(position, true);
+  let vertical = axisCorrection(position, false);
   let modeStrength = select(
-    1.25,
-    select(1.0, 0.72, uniforms.flags.y > 1.5),
+    0.90,
+    select(0.70, 0.50, uniforms.flags.y > 1.5),
     uniforms.flags.y > 0.5,
   );
   let candidate = center + (horizontal + vertical) * modeStrength;

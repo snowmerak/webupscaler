@@ -86,6 +86,7 @@ export class WebGpuUpscaler {
   private initialization: Promise<void> | null = null
   private readonly uniformData = new Float32Array(32)
   private frameIndex = 0
+  private readonly preprocessedReady: Pair<boolean> = [false, false]
   private bufferedFrameTiming: FrameTiming | null = null
   private lastMediaTime: number | null = null
   private previousDt = 1 / 60
@@ -552,6 +553,7 @@ export class WebGpuUpscaler {
         { texture: resources.input[destination], colorSpace: 'srgb' },
         { width: video.videoWidth, height: video.videoHeight },
       )
+      this.preprocessedReady[destination] = false
     } catch (error) {
       if (error instanceof DOMException && error.name === 'SecurityError') {
         throw new DOMException('이 영상은 브라우저 보안 정책상 GPU로 복사할 수 없습니다.', 'SecurityError')
@@ -578,13 +580,21 @@ export class WebGpuUpscaler {
     )
 
     const encoder = device.createCommandEncoder({ label: 'Web Upscaler preprocessing and reconstruction encoder' })
-    const deblockPass = encoder.beginComputePass({ label: 'Center and next-frame adaptive deblock pass' })
-    deblockPass.setPipeline(this.requireDeblockPipeline())
-    deblockPass.setBindGroup(0, resources.deblockBindGroups[center])
-    deblockPass.dispatchWorkgroups(Math.ceil(resources.inputWidth / 8), Math.ceil(resources.inputHeight / 8))
-    deblockPass.setBindGroup(0, resources.deblockBindGroups[future])
-    deblockPass.dispatchWorkgroups(Math.ceil(resources.inputWidth / 8), Math.ceil(resources.inputHeight / 8))
-    deblockPass.end()
+    const deblockCenter = !this.preprocessedReady[center]
+    const deblockFuture = !this.preprocessedReady[future]
+    if (deblockCenter || deblockFuture) {
+      const deblockPass = encoder.beginComputePass({ label: 'New-frame adaptive deblock pass' })
+      deblockPass.setPipeline(this.requireDeblockPipeline())
+      if (deblockCenter) {
+        deblockPass.setBindGroup(0, resources.deblockBindGroups[center])
+        deblockPass.dispatchWorkgroups(Math.ceil(resources.inputWidth / 8), Math.ceil(resources.inputHeight / 8))
+      }
+      if (deblockFuture) {
+        deblockPass.setBindGroup(0, resources.deblockBindGroups[future])
+        deblockPass.dispatchWorkgroups(Math.ceil(resources.inputWidth / 8), Math.ceil(resources.inputHeight / 8))
+      }
+      deblockPass.end()
+    }
 
     const analyzePass = encoder.beginComputePass({ label: 'Center and next-frame analyze pass' })
     analyzePass.setPipeline(this.requireAnalyzePipeline())
@@ -633,6 +643,8 @@ export class WebGpuUpscaler {
     compositePass.end()
 
     device.queue.submit([encoder.finish()])
+    if (deblockCenter) this.preprocessedReady[center] = true
+    if (deblockFuture) this.preprocessedReady[future] = true
     this.pendingSubmissions += 1
     if (this.pendingSubmissions === WebGpuUpscaler.MAX_PENDING_SUBMISSIONS) {
       this.closeSubmissionBatch(device)
@@ -655,10 +667,14 @@ export class WebGpuUpscaler {
   resetHistory() {
     this.resetNextFrame = true
     this.bufferedFrameTiming = null
+    this.preprocessedReady[0] = false
+    this.preprocessedReady[1] = false
   }
 
   private resetTemporalState() {
     this.frameIndex = 0
+    this.preprocessedReady[0] = false
+    this.preprocessedReady[1] = false
     this.bufferedFrameTiming = null
     this.lastMediaTime = null
     this.previousDt = 1 / 60
