@@ -34,34 +34,28 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 
   let position = vec2<i32>(id.xy);
   let center = loadFrame(position);
-  let tl = loadFrame(position + vec2<i32>(-1, -1));
   let top = loadFrame(position + vec2<i32>(0, -1));
-  let tr = loadFrame(position + vec2<i32>(1, -1));
   let left = loadFrame(position + vec2<i32>(-1, 0));
   let right = loadFrame(position + vec2<i32>(1, 0));
-  let bl = loadFrame(position + vec2<i32>(-1, 1));
   let bottom = loadFrame(position + vec2<i32>(0, 1));
-  let br = loadFrame(position + vec2<i32>(1, 1));
 
-  let lowPass = (
-    tl + top * 2.0 + tr
-    + left * 2.0 + center * 4.0 + right * 2.0
-    + bl + bottom * 2.0 + br
-  ) * 0.0625;
+  // Five-tap contrast-adaptive sharpening. The cross footprint is cheaper
+  // than the old Sobel/3x3 pass and keeps the response centered on the pixel.
+  let lowPass = center * 0.5 + (top + left + right + bottom) * 0.125;
   let centerLuma = luma(center);
   let lowLuma = luma(lowPass);
   let detail = centerLuma - lowLuma;
-  let gx = luma(tr + right * 2.0 + br - tl - left * 2.0 - bl) * 0.25;
-  let gy = luma(bl + bottom * 2.0 + br - tl - top * 2.0 - tr) * 0.25;
+  let gx = (luma(right) - luma(left)) * 0.5;
+  let gy = (luma(bottom) - luma(top)) * 0.5;
   let edgeMagnitude = length(vec2<f32>(gx, gy));
 
-  let minimum = min(center, min(min(min(tl, top), min(tr, left)), min(min(right, bl), min(bottom, br))));
-  let maximum = max(center, max(max(max(tl, top), max(tr, left)), max(max(right, bl), max(bottom, br))));
+  let minimum = min(center, min(min(top, bottom), min(left, right)));
+  let maximum = max(center, max(max(top, bottom), max(left, right)));
   let minimumLuma = luma(minimum);
   let maximumLuma = luma(maximum);
   let localRange = maximumLuma - minimumLuma;
-  let detailMask = smoothstep(0.0025, 0.022, abs(detail));
-  let edgeMask = smoothstep(0.014, 0.125, edgeMagnitude);
+  let detailMask = smoothstep(0.0018, 0.018, abs(detail));
+  let edgeMask = smoothstep(0.010, 0.105, edgeMagnitude);
   let extremity = smoothstep(0.16, 0.40, abs(centerLuma - 0.5));
   let textLike = smoothstep(0.075, 0.260, localRange) * edgeMask * extremity;
   let modeScale = select(
@@ -73,15 +67,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // Deliberately aggressive starting point: visible enough to reveal ringing
   // and halo limits, then intended to be tuned down from real playback.
   let sharpenGain = (
-    0.90 + 0.48 * edgeMask + 0.32 * textLike
+    1.18 + 0.58 * edgeMask + 0.38 * textLike
   ) * detailMask * modeScale;
   let shoulder = max(0.0, 1.0 - 4.0 * (centerLuma - 0.5) * (centerLuma - 0.5));
   let globalContrast = (centerLuma - 0.5) * 0.12 * shoulder * modeScale;
-  let localContrast = detail * 0.12 * (0.35 + 0.65 * edgeMask) * modeScale;
+  let localContrast = detail * 0.18 * (0.35 + 0.65 * edgeMask) * modeScale;
   let targetLuma = centerLuma + detail * sharpenGain + globalContrast + localContrast;
   let lumaShifted = center + vec3<f32>(targetLuma - centerLuma);
 
-  let allowance = (maximum - minimum) * 0.12 + vec3<f32>(0.003);
+  let allowance = (maximum - minimum) * 0.16 + vec3<f32>(0.004);
   let bounded = clamp(lumaShifted, minimum - allowance, maximum + allowance);
   let valid = all(bounded == bounded)
     && all(abs(bounded) <= vec3<f32>(65504.0));

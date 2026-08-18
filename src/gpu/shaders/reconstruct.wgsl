@@ -168,14 +168,20 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let motionConfidence = clamp(motion.z, 0.0, 1.0);
   let matchTrust = 1.0 - smoothstep(0.18, 0.72, motion.w);
   let photoError = abs(luma(futureFiltered) - luma(spatial));
-  let photoTrust = 1.0 - smoothstep(0.08, 0.32, photoError);
-  let phaseGain = mix(0.35, 1.50, futurePhaseCoverage);
+  let photoTrust = 1.0 - smoothstep(0.055, 0.22, photoError);
+  let colorError = length(futureFiltered - spatial) * 0.57735026919;
+  let colorTrust = 1.0 - smoothstep(0.045, 0.18, colorError);
+  let phaseGain = mix(0.12, 1.0, futurePhaseCoverage);
   let temporalValid = futureInBounds
     && finiteVec3(spatial)
     && finiteVec3(futureFiltered);
   let temporalScale = select(
     0.0,
-    clamp(1.25 * motionConfidence * matchTrust * photoTrust * phaseGain, 0.0, 1.75),
+    clamp(
+      0.82 * motionConfidence * matchTrust * photoTrust * colorTrust * phaseGain,
+      0.0,
+      0.65,
+    ),
     temporalValid,
   );
 
@@ -186,17 +192,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let combined = (
     current.premultiplied + future.premultiplied * temporalScale
   ) / max(combinedWeight, 0.0001);
-  let localMinimum = select(
-    current.minimum,
-    min(current.minimum, future.minimum),
-    temporalScale > 0.0001,
-  );
-  let localMaximum = select(
-    current.maximum,
-    max(current.maximum, future.maximum),
-    temporalScale > 0.0001,
-  );
-  let allowance = (localMaximum - localMinimum) * 0.04 + vec3<f32>(0.001);
+  // Never let future evidence expand the center frame's local color envelope.
+  // That rejects disocclusions and coarse-motion errors before they can turn
+  // into a soft colored trail.
+  let localMinimum = current.minimum;
+  let localMaximum = current.maximum;
+  let allowance = (localMaximum - localMinimum) * 0.025 + vec3<f32>(0.00075);
   let bounded = clamp(combined, localMinimum - allowance, localMaximum + allowance);
   let resolved = select(spatial, bounded, finiteVec3(bounded));
   let temporalContribution = temporalScale / (1.0 + temporalScale);
