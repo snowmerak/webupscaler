@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js'
 
 const shaders = [
+  { file: 'deblock.wgsl', compute: ['main'], bindings: 3 },
   { file: 'analyze.wgsl', compute: ['main'], bindings: 4 },
   { file: 'motion.wgsl', compute: ['main'], bindings: 10 },
   { file: 'reconstruct.wgsl', compute: ['main'], bindings: 6 },
