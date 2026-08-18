@@ -10,6 +10,7 @@ const shaders = [
   { file: 'refine.wgsl', compute: ['main'], bindings: 3 },
   { file: 'micro-contrast.wgsl', compute: ['main'], bindings: 3 },
   { file: 'shock.wgsl', compute: ['main'], bindings: 3 },
+  { file: 'clarity.wgsl', compute: ['main'], bindings: 3 },
   { file: 'enhance.wgsl', compute: ['main'], bindings: 3 },
   { file: 'composite.wgsl', vertex: ['vertexMain'], fragment: ['fragmentMain'], bindings: 2 },
 ]

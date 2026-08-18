@@ -172,15 +172,34 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let colorError = length(futureFiltered - spatial) * 0.57735026919;
   let colorTrust = 1.0 - smoothstep(0.045, 0.18, colorError);
   let phaseGain = mix(0.12, 1.0, futurePhaseCoverage);
+  let localRange = max(0.0, luma(current.maximum) - luma(current.minimum));
+  let motionMagnitude = length(motion.xy);
+  // Temporal evidence is useful for broad, nearly static surfaces, but even a
+  // good block match can smear text, faces, and object silhouettes. Give flat
+  // regions a useful accumulation budget while collapsing it per pixel as
+  // texture, hard edges, or displacement appear.
+  let flatTrust = 1.0 - smoothstep(0.028, 0.115, localRange);
+  let textureBand = smoothstep(0.014, 0.060, localRange)
+    * (1.0 - smoothstep(0.105, 0.205, localRange));
+  let edgeTrust = 1.0 - smoothstep(0.090, 0.205, localRange);
+  let stillTrust = 1.0 - smoothstep(0.30, 1.80, motionMagnitude);
+  let regionBudget = (0.055 + 0.425 * flatTrust + 0.135 * textureBand)
+    * edgeTrust
+    * mix(0.32, 1.0, stillTrust);
   let temporalValid = futureInBounds
     && finiteVec3(spatial)
     && finiteVec3(futureFiltered);
   let temporalScale = select(
     0.0,
     clamp(
-      0.82 * motionConfidence * matchTrust * photoTrust * colorTrust * phaseGain,
+      regionBudget
+        * motionConfidence
+        * matchTrust
+        * photoTrust
+        * colorTrust
+        * phaseGain,
       0.0,
-      0.65,
+      0.50,
     ),
     temporalValid,
   );

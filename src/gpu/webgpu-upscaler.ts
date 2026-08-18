@@ -1,6 +1,7 @@
 import type { OutputTarget } from '../runtime/output-policy'
 import type { BaseUpscalerSettings } from '../shared/settings'
 import analyzeShader from './shaders/analyze.wgsl?raw'
+import clarityShader from './shaders/clarity.wgsl?raw'
 import compositeShader from './shaders/composite.wgsl?raw'
 import deblockShader from './shaders/deblock.wgsl?raw'
 import enhanceShader from './shaders/enhance.wgsl?raw'
@@ -33,6 +34,7 @@ interface GpuResources {
   refined: Pair<GPUTexture>
   microDetailed: Pair<GPUTexture>
   shocked: Pair<GPUTexture>
+  clarified: Pair<GPUTexture>
   enhanced: Pair<GPUTexture>
   deblockBindGroups: Pair<GPUBindGroup>
   analyzeBindGroups: Pair<GPUBindGroup>
@@ -41,6 +43,7 @@ interface GpuResources {
   refineBindGroups: Pair<GPUBindGroup>
   microContrastBindGroups: Pair<GPUBindGroup>
   shockBindGroups: Pair<GPUBindGroup>
+  clarityBindGroups: Pair<GPUBindGroup>
   enhanceBindGroups: Pair<GPUBindGroup>
   compositeBindGroups: Pair<GPUBindGroup>
   inputWidth: number
@@ -87,6 +90,7 @@ export class WebGpuUpscaler {
   private refinePipeline: GPUComputePipeline | null = null
   private microContrastPipeline: GPUComputePipeline | null = null
   private shockPipeline: GPUComputePipeline | null = null
+  private clarityPipeline: GPUComputePipeline | null = null
   private enhancePipeline: GPUComputePipeline | null = null
   private compositePipeline: GPURenderPipeline | null = null
   private resources: GpuResources | null = null
@@ -162,6 +166,7 @@ export class WebGpuUpscaler {
     const refineModule = this.device.createShaderModule({ label: 'Flat-region refinement shader', code: refineShader })
     const microContrastModule = this.device.createShaderModule({ label: 'Micro-contrast shader', code: microContrastShader })
     const shockModule = this.device.createShaderModule({ label: 'Shock edge-compression shader', code: shockShader })
+    const clarityModule = this.device.createShaderModule({ label: 'Wide-radius clarity shader', code: clarityShader })
     const enhanceModule = this.device.createShaderModule({ label: 'Contrast and sharpening shader', code: enhanceShader })
     const compositeModule = this.device.createShaderModule({ label: 'Composite shader', code: compositeShader })
     await Promise.all([
@@ -172,6 +177,7 @@ export class WebGpuUpscaler {
       this.assertShader(refineModule, 'Flat-region refinement'),
       this.assertShader(microContrastModule, 'Micro-contrast'),
       this.assertShader(shockModule, 'Shock edge compression'),
+      this.assertShader(clarityModule, 'Wide-radius clarity'),
       this.assertShader(enhanceModule, 'Contrast and sharpening'),
       this.assertShader(compositeModule, 'Composite'),
     ])
@@ -210,6 +216,11 @@ export class WebGpuUpscaler {
       label: 'Shock edge-compression pipeline',
       layout: 'auto',
       compute: { module: shockModule, entryPoint: 'main' },
+    })
+    this.clarityPipeline = await this.device.createComputePipelineAsync({
+      label: 'Wide-radius clarity pipeline',
+      layout: 'auto',
+      compute: { module: clarityModule, entryPoint: 'main' },
     })
     this.enhancePipeline = await this.device.createComputePipelineAsync({
       label: 'Local contrast and sharpening pipeline',
@@ -333,6 +344,12 @@ export class WebGpuUpscaler {
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }))
+    const clarified = this.pair((index) => device.createTexture({
+      label: `Wide-radius clarified lattice ${index}`,
+      size: [target.width, target.height],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
     const enhanced = this.pair((index) => device.createTexture({
       label: `Contrast and sharpened lattice ${index}`,
       size: [target.width, target.height],
@@ -354,6 +371,7 @@ export class WebGpuUpscaler {
     const refinePipeline = this.requireRefinePipeline()
     const microContrastPipeline = this.requireMicroContrastPipeline()
     const shockPipeline = this.requireShockPipeline()
+    const clarityPipeline = this.requireClarityPipeline()
     const enhancePipeline = this.requireEnhancePipeline()
     const compositePipeline = this.requireCompositePipeline()
     const deblockBindGroups = this.pair((current) => device.createBindGroup({
@@ -436,11 +454,20 @@ export class WebGpuUpscaler {
         { binding: 2, resource: { buffer: uniformBuffer } },
       ],
     }))
+    const clarityBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Wide-radius clarity bind group ${current}`,
+      layout: clarityPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: shocked[current].createView() },
+        { binding: 1, resource: clarified[current].createView() },
+        { binding: 2, resource: { buffer: uniformBuffer } },
+      ],
+    }))
     const enhanceBindGroups = this.pair((current) => device.createBindGroup({
       label: `Contrast and sharpening bind group ${current}`,
       layout: enhancePipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: shocked[current].createView() },
+        { binding: 0, resource: clarified[current].createView() },
         { binding: 1, resource: enhanced[current].createView() },
         { binding: 2, resource: { buffer: uniformBuffer } },
       ],
@@ -464,6 +491,7 @@ export class WebGpuUpscaler {
       refined,
       microDetailed,
       shocked,
+      clarified,
       enhanced,
       deblockBindGroups,
       analyzeBindGroups,
@@ -472,6 +500,7 @@ export class WebGpuUpscaler {
       refineBindGroups,
       microContrastBindGroups,
       shockBindGroups,
+      clarityBindGroups,
       enhanceBindGroups,
       compositeBindGroups,
       inputWidth: video.videoWidth,
@@ -692,6 +721,12 @@ export class WebGpuUpscaler {
     shockPass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
     shockPass.end()
 
+    const clarityPass = encoder.beginComputePass({ label: 'Wide-radius clarity pass' })
+    clarityPass.setPipeline(this.requireClarityPipeline())
+    clarityPass.setBindGroup(0, resources.clarityBindGroups[center])
+    clarityPass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
+    clarityPass.end()
+
     const enhancePass = encoder.beginComputePass({ label: 'Local contrast, text clarity, and sharpening pass' })
     enhancePass.setPipeline(this.requireEnhancePipeline())
     enhancePass.setBindGroup(0, resources.enhanceBindGroups[center])
@@ -808,6 +843,11 @@ export class WebGpuUpscaler {
     return this.shockPipeline
   }
 
+  private requireClarityPipeline() {
+    if (!this.clarityPipeline) throw new WebGpuUnavailableError('Wide-radius clarity pipeline is not initialized.')
+    return this.clarityPipeline
+  }
+
   private requireEnhancePipeline() {
     if (!this.enhancePipeline) throw new WebGpuUnavailableError('Enhancement pipeline이 초기화되지 않았습니다.')
     return this.enhancePipeline
@@ -828,6 +868,7 @@ export class WebGpuUpscaler {
     for (const texture of this.resources?.refined ?? []) texture.destroy()
     for (const texture of this.resources?.microDetailed ?? []) texture.destroy()
     for (const texture of this.resources?.shocked ?? []) texture.destroy()
+    for (const texture of this.resources?.clarified ?? []) texture.destroy()
     for (const texture of this.resources?.enhanced ?? []) texture.destroy()
     this.resources = null
   }
