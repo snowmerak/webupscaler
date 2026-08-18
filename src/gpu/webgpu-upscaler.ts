@@ -76,6 +76,7 @@ export class WebGpuUpscaler {
   private initialization: Promise<void> | null = null
   private readonly uniformData = new Float32Array(32)
   private frameIndex = 0
+  private bufferedFrameTiming: FrameTiming | null = null
   private lastMediaTime: number | null = null
   private previousDt = 1 / 60
   private resetNextFrame = true
@@ -308,20 +309,21 @@ export class WebGpuUpscaler {
       })
     })
     const reconstructBindGroups = this.pair((current) => {
-      const previous = 1 - current
+      const future = 1 - current
       return device.createBindGroup({
         label: `Temporal reconstruct bind group ${current}`,
         layout: reconstructPipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: input[current].createView() },
           { binding: 1, resource: motionMeta[current].createView() },
-          { binding: 2, resource: history[previous].createView() },
+          { binding: 2, resource: history[future].createView() },
           { binding: 3, resource: history[current].createView() },
           { binding: 4, resource: sampler },
           { binding: 5, resource: { buffer: uniformBuffer } },
-          { binding: 6, resource: historyMoments[previous].createView() },
+          { binding: 6, resource: historyMoments[future].createView() },
           { binding: 7, resource: historyMoments[current].createView() },
           { binding: 8, resource: reconstruction[current].createView() },
+          { binding: 9, resource: input[future].createView() },
         ],
       })
     })
@@ -443,9 +445,15 @@ export class WebGpuUpscaler {
     target: OutputTarget,
     settings: BaseUpscalerSettings,
     frameTiming: FrameTiming,
-  ): Promise<ProcessResult | null> {
+  ): Promise<ProcessResult | null | undefined> {
     await this.initialize()
-    if (this.pendingSubmissions >= WebGpuUpscaler.MAX_PENDING_SUBMISSIONS) return null
+    if (this.pendingSubmissions >= WebGpuUpscaler.MAX_PENDING_SUBMISSIONS) {
+      // Never pair an old center with a non-adjacent future frame after GPU
+      // backpressure. The next accepted callback starts a fresh adjacent pair.
+      this.bufferedFrameTiming = null
+      this.resetNextFrame = true
+      return null
+    }
 
     const device = this.requireDevice()
     const context = this.requireContext()
@@ -463,14 +471,20 @@ export class WebGpuUpscaler {
     }
 
     const resources = this.ensureResources(video, target)
-    const timing = this.getTiming(frameTiming.mediaTime)
-    const current = this.frameIndex % 2
-    this.writeUniforms(video, target, settings, resources, timing, frameTiming.skippedFrames)
+    if (this.bufferedFrameTiming !== null && frameTiming.skippedFrames > 0) {
+      // requestVideoFrameCallback can advance while a submission is in flight.
+      // Drop the stale center so "future" always means the next accepted frame.
+      this.bufferedFrameTiming = null
+      this.resetNextFrame = true
+    }
+    const center = this.frameIndex % 2
+    const future = 1 - center
+    const destination = this.bufferedFrameTiming === null ? center : future
 
     try {
       device.queue.copyExternalImageToTexture(
         { source: video },
-        { texture: resources.input[current], colorSpace: 'srgb' },
+        { texture: resources.input[destination], colorSpace: 'srgb' },
         { width: video.videoWidth, height: video.videoHeight },
       )
     } catch (error) {
@@ -480,22 +494,42 @@ export class WebGpuUpscaler {
       throw error
     }
 
+    // Keep exactly one decoded frame of lookahead. The first callback only
+    // seeds the center slot; callback N+1 processes and presents frame N.
+    if (this.bufferedFrameTiming === null) {
+      this.bufferedFrameTiming = { ...frameTiming }
+      return undefined
+    }
+
+    const centerFrameTiming = this.bufferedFrameTiming
+    const timing = this.getTiming(centerFrameTiming.mediaTime)
+    this.writeUniforms(
+      video,
+      target,
+      settings,
+      resources,
+      timing,
+      centerFrameTiming.skippedFrames,
+    )
+
     const encoder = device.createCommandEncoder({ label: 'Web Upscaler three-stage frame encoder' })
-    const analyzePass = encoder.beginComputePass({ label: 'Analyze pass' })
+    const analyzePass = encoder.beginComputePass({ label: 'Center and next-frame analyze pass' })
     analyzePass.setPipeline(this.requireAnalyzePipeline())
-    analyzePass.setBindGroup(0, resources.analyzeBindGroups[current])
+    analyzePass.setBindGroup(0, resources.analyzeBindGroups[center])
+    analyzePass.dispatchWorkgroups(Math.ceil(resources.analysisWidth / 8), Math.ceil(resources.analysisHeight / 8))
+    analyzePass.setBindGroup(0, resources.analyzeBindGroups[future])
     analyzePass.dispatchWorkgroups(Math.ceil(resources.analysisWidth / 8), Math.ceil(resources.analysisHeight / 8))
     analyzePass.end()
 
-    const motionPass = encoder.beginComputePass({ label: 'Acceleration-predicted motion pass' })
+    const motionPass = encoder.beginComputePass({ label: 'Center-to-next-frame motion pass' })
     motionPass.setPipeline(this.requireMotionPipeline())
-    motionPass.setBindGroup(0, resources.motionBindGroups[current])
+    motionPass.setBindGroup(0, resources.motionBindGroups[center])
     motionPass.dispatchWorkgroups(Math.ceil(resources.motionWidth / 8), Math.ceil(resources.motionHeight / 8))
     motionPass.end()
 
     const reconstructPass = encoder.beginComputePass({ label: '2x and temporal reconstruction pass' })
     reconstructPass.setPipeline(this.requireReconstructPipeline())
-    reconstructPass.setBindGroup(0, resources.reconstructBindGroups[current])
+    reconstructPass.setBindGroup(0, resources.reconstructBindGroups[center])
     reconstructPass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
     reconstructPass.end()
 
@@ -509,7 +543,7 @@ export class WebGpuUpscaler {
       }],
     })
     compositePass.setPipeline(this.requireCompositePipeline())
-    compositePass.setBindGroup(0, resources.compositeBindGroups[current])
+    compositePass.setBindGroup(0, resources.compositeBindGroups[center])
     compositePass.draw(3)
     compositePass.end()
 
@@ -519,9 +553,10 @@ export class WebGpuUpscaler {
       this.closeSubmissionBatch(device)
     }
 
-    this.lastMediaTime = frameTiming.mediaTime
+    this.lastMediaTime = centerFrameTiming.mediaTime
     this.previousDt = timing.dt
     this.resetNextFrame = false
+    this.bufferedFrameTiming = { ...frameTiming }
     this.frameIndex += 1
     const gpuQueueMs = this.completedGpuSampleMs
     this.completedGpuSampleMs = null
@@ -534,10 +569,12 @@ export class WebGpuUpscaler {
 
   resetHistory() {
     this.resetNextFrame = true
+    this.bufferedFrameTiming = null
   }
 
   private resetTemporalState() {
     this.frameIndex = 0
+    this.bufferedFrameTiming = null
     this.lastMediaTime = null
     this.previousDt = 1 / 60
     this.resetNextFrame = true

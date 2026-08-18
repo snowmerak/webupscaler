@@ -85,12 +85,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     return;
   }
 
-  if (uniforms.flags.x > 0.5) {
-    textureStore(motionStateCurrent, vec2<i32>(id.xy), vec4<f32>(0.0));
-    textureStore(motionMetaCurrent, vec2<i32>(id.xy), vec4<f32>(0.0, 0.0, 0.0, 1.0));
-    return;
-  }
-
   let motionUv = (vec2<f32>(id.xy) + vec2<f32>(0.5)) * uniforms.motionSize.zw;
   let analysisCenter = vec2<f32>(id.xy) * 4.0 + vec2<f32>(2.0);
   let featureCenterUv = analysisCenter * uniforms.analysisSize.zw;
@@ -111,8 +105,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     ).rgb);
   }
 
-  let previousState = textureSampleLevel(motionStatePrevious, linearClamp, motionUv, 0.0);
-  let previousMeta = textureSampleLevel(motionMetaPrevious, linearClamp, motionUv, 0.0);
+  let sampledPreviousState = textureSampleLevel(motionStatePrevious, linearClamp, motionUv, 0.0);
+  let sampledPreviousMeta = textureSampleLevel(motionMetaPrevious, linearClamp, motionUv, 0.0);
+  let keepPrediction = uniforms.flags.x <= 0.5;
+  let previousState = select(vec4<f32>(0.0), sampledPreviousState, keepPrediction);
+  let previousMeta = select(vec4<f32>(0.0, 0.0, 0.0, 1.0), sampledPreviousMeta, keepPrediction);
   let dt = max(uniforms.timeScale.x, 0.0001);
   let accelerationContribution = select(0.0, 0.5, previousMeta.z > 0.35);
   var predicted = previousState.xy * dt

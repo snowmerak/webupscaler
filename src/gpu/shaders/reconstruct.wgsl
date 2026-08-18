@@ -17,6 +17,7 @@ struct FrameUniforms {
 @group(0) @binding(6) var momentsPrevious: texture_2d<f32>;
 @group(0) @binding(7) var momentsCurrent: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(8) var reconstruction: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(9) var futureFrame: texture_2d<f32>;
 
 fn luma(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
@@ -38,6 +39,15 @@ fn loadInput(position: vec2<i32>) -> vec3<f32> {
   let maximum = vec2<i32>(uniforms.inputSize.xy) - vec2<i32>(1);
   return textureLoad(
     inputFrame,
+    clamp(position, vec2<i32>(0), maximum),
+    0,
+  ).rgb;
+}
+
+fn loadFuture(position: vec2<i32>) -> vec3<f32> {
+  let maximum = vec2<i32>(uniforms.inputSize.xy) - vec2<i32>(1);
+  return textureLoad(
+    futureFrame,
     clamp(position, vec2<i32>(0), maximum),
     0,
   ).rgb;
@@ -107,16 +117,33 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let currentWeight = select(softCoverage, hardCoverage, exactTwoX);
   let currentObservation = loadInput(sourceCenter);
 
-  // Step 2: pull the previous observation field into the current coordinate
-  // system. Subpixel motion moves known LR samples onto previously missing HR
-  // phases; no synthetic spatial value is ever written into this history.
+  // Step 2: the renderer intentionally runs one decoded frame behind. Motion
+  // maps this center frame into the already-buffered next frame, allowing its
+  // real LR samples to land on otherwise missing phases of the 2x lattice.
   let sampledMotion = textureSampleLevel(motionMetaCurrent, linearClamp, sourceUv, 0.0);
   let motion = select(
     vec4<f32>(0.0, 0.0, 0.0, 1.0),
     sampledMotion,
     finiteVec4(sampledMotion),
   );
-  let previousHrCoordinate = hrCoordinate + motion.xy;
+  let futureHrCoordinate = hrCoordinate + motion.xy;
+  let futureCenter = vec2<i32>(round(futureHrCoordinate));
+  let futurePhaseOffset = futureHrCoordinate - round(futureHrCoordinate);
+  let futureInBounds = all(futureHrCoordinate >= vec2<f32>(-0.5))
+    && all(futureHrCoordinate <= uniforms.inputSize.xy - vec2<f32>(0.5));
+  let motionTrust = mix(0.2, 1.0, clamp(motion.z, 0.0, 1.0));
+  let matchTrust = 1.0 - smoothstep(0.18, 0.72, motion.w);
+  let futureCoverage = exp(-16.0 * dot(futurePhaseOffset, futurePhaseOffset));
+  let futureWeight = futureCoverage
+    * motionTrust
+    * matchTrust
+    * select(0.0, 1.0, futureInBounds);
+  let futureObservation = loadFuture(futureCenter);
+
+  // Approximate the previous center-frame coordinate with the inverse of the
+  // forward vector. This keeps the longer history aligned while the explicit
+  // next-frame observation supplies the new subpixel information.
+  let previousHrCoordinate = hrCoordinate - motion.xy;
   let previousOutputCoordinate = previousHrCoordinate * scale;
   let previousUv = (
     previousOutputCoordinate + vec2<f32>(0.5)
@@ -143,8 +170,6 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let oldMean = oldHistory.rgb / max(oldCoverage, 0.0001);
   let photoError = abs(luma(spatial) - luma(oldMean));
   let photoTrust = 1.0 - smoothstep(0.035, 0.14, photoError);
-  let motionTrust = mix(0.12, 1.0, clamp(motion.z, 0.0, 1.0));
-  let matchTrust = 1.0 - smoothstep(0.18, 0.72, motion.w);
   let oldScaleCandidate = uniforms.thresholds.z
     * photoTrust
     * motionTrust
@@ -159,13 +184,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let oldWeight = oldCoverage * oldScale;
 
   let accumulatedPremul = currentObservation * currentWeight
+    + futureObservation * futureWeight
     + oldMean * oldWeight;
-  let accumulatedWeight = currentWeight + oldWeight;
+  let accumulatedWeight = currentWeight + futureWeight + oldWeight;
   let oldSecondMoment = oldMoments.rgb / max(oldCoverage, 0.0001);
   let accumulatedSecondPremul = currentObservation * currentObservation
       * currentWeight
+    + futureObservation * futureObservation * futureWeight
     + oldSecondMoment * oldWeight;
   let accumulatedSquaredWeight = currentWeight * currentWeight
+    + futureWeight * futureWeight
     + max(oldMoments.a, 0.0) * oldScale * oldScale;
 
   // Keep the premultiplied observation field bounded while retaining its
@@ -196,7 +224,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let effectiveSamples = storedWeight * storedWeight
     / max(storedSquaredWeight, 0.0001);
   let coverageTrust = smoothstep(0.08, 0.72, storedWeight);
-  let sampleTrust = smoothstep(0.9, 2.4, effectiveSamples);
+  let sampleTrust = smoothstep(0.45, 1.15, effectiveSamples);
   let varianceTrust = exp(-varianceLuma * 72.0);
   let temporalTrustCandidate = coverageTrust * sampleTrust * varianceTrust;
   let temporalTrust = select(
@@ -205,13 +233,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     finiteScalar(temporalTrustCandidate) && temporalMeanValid,
   );
 
-  // Only real, aligned temporal observations may replace the spatial 2x
-  // placeholder. No sharpening, contrast curve, deblock, or back-projection
-  // is applied here.
-  let resolved = mix(spatial, temporalMean, temporalTrust);
+  // RGB carries only the recovered observation. Alpha is the per-pixel gate;
+  // composite uses spatial Lanczos exclusively where this pixel is untrusted.
   textureStore(
     reconstruction,
     vec2<i32>(id.xy),
-    vec4<f32>(clamp(resolved, vec3<f32>(0.0), vec3<f32>(1.0)), temporalTrust),
+    vec4<f32>(clamp(temporalMean, vec3<f32>(0.0), vec3<f32>(1.0)), temporalTrust),
   );
 }

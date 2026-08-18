@@ -211,7 +211,12 @@ export class UpscalerController {
       mediaTime: metadata.mediaTime,
       skippedFrames: this.skippedSinceLastFrame,
     })
-    if (result === undefined) return
+    if (result === undefined) {
+      // The accepted frame is now the lookahead pair's center. Any skips that
+      // happened before this seed no longer describe the center-to-next gap.
+      this.skippedSinceLastFrame = 0
+      return
+    }
     if (result === null) {
       this.metrics.recordSkipped()
       this.skippedSinceLastFrame += 1

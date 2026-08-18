@@ -134,7 +134,7 @@ async function processFrame() {
       mediaTime: video.currentTime,
       skippedFrames: 0,
     })
-    if (result === null) return
+    if (result == null) return
     processed += 1
     if (result.gpuQueueMs !== null) lastGpuQueueMs = result.gpuQueueMs
     status.textContent = '실행 중'
