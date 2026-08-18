@@ -41,6 +41,12 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let position = vec2<i32>(id.xy);
   let center = loadFrame(position);
   let centerLuma = luma(center);
+  let samples = array<vec3<f32>, 4>(
+    loadFrame(position + OFFSETS[0]),
+    loadFrame(position + OFFSETS[1]),
+    loadFrame(position + OFFSETS[2]),
+    loadFrame(position + OFFSETS[3]),
+  );
   var filtered = center * 2.0;
   var weightSum = 2.0;
   var minimum = center;
@@ -49,7 +55,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   var maximumLuma = centerLuma;
 
   for (var index = 0u; index < 4u; index += 1u) {
-    let sample = loadFrame(position + OFFSETS[index]);
+    let sample = samples[index];
     let sampleLuma = luma(sample);
     let rangeWeight = exp(-abs(sampleLuma - centerLuma) * 34.0);
     let weight = rangeWeight;
@@ -65,6 +71,22 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let localRange = maximumLuma - minimumLuma;
   let residual = abs(centerLuma - luma(filtered));
   let flatMask = 1.0 - smoothstep(0.022, 0.105, localRange);
+  let horizontalCurvature = abs(
+    luma(samples[1]) + luma(samples[2]) - 2.0 * centerLuma
+  );
+  let verticalCurvature = abs(
+    luma(samples[0]) + luma(samples[3]) - 2.0 * centerLuma
+  );
+  let gradientMagnitude = max(
+    abs(luma(samples[2]) - luma(samples[1])),
+    abs(luma(samples[3]) - luma(samples[0])),
+  ) * 0.5;
+  let gradientContinuity = 1.0 - smoothstep(
+    0.006,
+    0.030,
+    min(horizontalCurvature, verticalCurvature),
+  );
+  let gradientEvidence = smoothstep(0.0008, 0.012, gradientMagnitude);
   let noiseEvidence = smoothstep(0.0025, 0.020, residual);
   let ringEvidence = smoothstep(0.009, 0.050, residual)
     * (1.0 - smoothstep(0.085, 0.180, localRange));
@@ -73,8 +95,16 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     select(0.88, 0.62, uniforms.flags.y > 1.5),
     uniforms.flags.y > 0.5,
   );
+  // A small continuous-tone contribution joins quantized steps in walls,
+  // skin and other broad gradients. Curvature and range masks keep it away
+  // from text and real object boundaries.
+  let gradientSmoothing = flatMask * gradientContinuity
+    * (0.14 + 0.22 * gradientEvidence);
   let smoothing = clamp(
-    flatMask * (0.92 * noiseEvidence + 0.62 * ringEvidence) * modeScale,
+    (
+      gradientSmoothing
+      + flatMask * (0.92 * noiseEvidence + 0.62 * ringEvidence)
+    ) * modeScale,
     0.0,
     0.78,
   );

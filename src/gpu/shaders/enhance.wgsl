@@ -58,6 +58,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let edgeMask = smoothstep(0.010, 0.105, edgeMagnitude);
   let extremity = smoothstep(0.16, 0.40, abs(centerLuma - 0.5));
   let textLike = smoothstep(0.075, 0.260, localRange) * edgeMask * extremity;
+  let structuredDetail = smoothstep(0.010, 0.050, localRange);
+  let gradientSharpening = mix(0.30, 1.0, structuredDetail);
   let modeScale = select(
     1.15,
     select(0.88, 0.62, uniforms.flags.y > 1.5),
@@ -68,10 +70,11 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   // and halo limits, then intended to be tuned down from real playback.
   let sharpenGain = (
     1.18 + 0.58 * edgeMask + 0.38 * textLike
-  ) * detailMask * modeScale;
+  ) * detailMask * gradientSharpening * modeScale;
   let shoulder = max(0.0, 1.0 - 4.0 * (centerLuma - 0.5) * (centerLuma - 0.5));
   let globalContrast = (centerLuma - 0.5) * 0.12 * shoulder * modeScale;
-  let localContrast = detail * 0.18 * (0.35 + 0.65 * edgeMask) * modeScale;
+  let localContrast = detail * 0.18 * (0.35 + 0.65 * edgeMask)
+    * mix(0.45, 1.0, structuredDetail) * modeScale;
   let targetLuma = centerLuma + detail * sharpenGain + globalContrast + localContrast;
   let lumaShifted = center + vec3<f32>(targetLuma - centerLuma);
 
