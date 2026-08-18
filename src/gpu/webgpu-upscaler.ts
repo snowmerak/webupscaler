@@ -23,8 +23,6 @@ interface GpuResources {
   features: Pair<GPUTexture>
   motionStates: Pair<GPUTexture>
   motionMeta: Pair<GPUTexture>
-  history: Pair<GPUTexture>
-  historyMoments: Pair<GPUTexture>
   reconstruction: Pair<GPUTexture>
   analyzeBindGroups: Pair<GPUBindGroup>
   motionBindGroups: Pair<GPUBindGroup>
@@ -255,20 +253,8 @@ export class WebGpuUpscaler {
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }))
-    const history = this.pair((index) => device.createTexture({
-      label: `HR observation accumulator ${index}`,
-      size: [target.width, target.height],
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    }))
-    const historyMoments = this.pair((index) => device.createTexture({
-      label: `HR observation second moment and squared weight ${index}`,
-      size: [target.width, target.height],
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    }))
     const reconstruction = this.pair((index) => device.createTexture({
-      label: `Resolved 2x temporal reconstruction ${index}`,
+      label: `Resolved 2x observation lattice ${index}`,
       size: [target.width, target.height],
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
@@ -316,14 +302,10 @@ export class WebGpuUpscaler {
         entries: [
           { binding: 0, resource: input[current].createView() },
           { binding: 1, resource: motionMeta[current].createView() },
-          { binding: 2, resource: history[future].createView() },
-          { binding: 3, resource: history[current].createView() },
-          { binding: 4, resource: sampler },
-          { binding: 5, resource: { buffer: uniformBuffer } },
-          { binding: 6, resource: historyMoments[future].createView() },
-          { binding: 7, resource: historyMoments[current].createView() },
-          { binding: 8, resource: reconstruction[current].createView() },
-          { binding: 9, resource: input[future].createView() },
+          { binding: 2, resource: sampler },
+          { binding: 3, resource: { buffer: uniformBuffer } },
+          { binding: 4, resource: reconstruction[current].createView() },
+          { binding: 5, resource: input[future].createView() },
         ],
       })
     })
@@ -332,9 +314,7 @@ export class WebGpuUpscaler {
       layout: compositePipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: reconstruction[current].createView() },
-        { binding: 1, resource: input[current].createView() },
-        { binding: 2, resource: sampler },
-        { binding: 3, resource: { buffer: uniformBuffer } },
+        { binding: 1, resource: { buffer: uniformBuffer } },
       ],
     }))
 
@@ -343,8 +323,6 @@ export class WebGpuUpscaler {
       features,
       motionStates,
       motionMeta,
-      history,
-      historyMoments,
       reconstruction,
       analyzeBindGroups,
       motionBindGroups,
@@ -627,8 +605,6 @@ export class WebGpuUpscaler {
     for (const texture of this.resources?.features ?? []) texture.destroy()
     for (const texture of this.resources?.motionStates ?? []) texture.destroy()
     for (const texture of this.resources?.motionMeta ?? []) texture.destroy()
-    for (const texture of this.resources?.history ?? []) texture.destroy()
-    for (const texture of this.resources?.historyMoments ?? []) texture.destroy()
     for (const texture of this.resources?.reconstruction ?? []) texture.destroy()
     this.resources = null
   }

@@ -10,21 +10,13 @@ struct FrameUniforms {
 
 @group(0) @binding(0) var inputFrame: texture_2d<f32>;
 @group(0) @binding(1) var motionMetaCurrent: texture_2d<f32>;
-@group(0) @binding(2) var historyPrevious: texture_2d<f32>;
-@group(0) @binding(3) var historyCurrent: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(4) var linearClamp: sampler;
-@group(0) @binding(5) var<uniform> uniforms: FrameUniforms;
-@group(0) @binding(6) var momentsPrevious: texture_2d<f32>;
-@group(0) @binding(7) var momentsCurrent: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(8) var reconstruction: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(9) var futureFrame: texture_2d<f32>;
+@group(0) @binding(2) var linearClamp: sampler;
+@group(0) @binding(3) var<uniform> uniforms: FrameUniforms;
+@group(0) @binding(4) var reconstruction: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(5) var futureFrame: texture_2d<f32>;
 
 fn luma(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
-
-fn finiteScalar(value: f32) -> bool {
-  return value == value && abs(value) <= 65504.0;
 }
 
 fn finiteVec3(value: vec3<f32>) -> bool {
@@ -65,8 +57,9 @@ fn lanczos2Weight(distance: f32) -> f32 {
   return sin(pix) * sin(pix * 0.5) / (pix * pix * 0.5);
 }
 
-// Step 1: construct the exact 2x lattice. Integer source positions remain
-// exact input samples; the three new phases start as bounded Lanczos values.
+// Build a bounded spatial value only for lattice sites that no real decoded
+// sample observes. Integer source positions are handled separately below and
+// never pass through this filter.
 fn spatialTwoX(sourceCoordinate: vec2<f32>) -> vec3<f32> {
   let base = vec2<i32>(floor(sourceCoordinate));
   let phase = fract(sourceCoordinate);
@@ -101,143 +94,67 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   }
 
   let scale = uniforms.outputSize.xy * uniforms.inputSize.zw;
-  let hrCoordinate = vec2<f32>(id.xy) / scale;
-  let sourceCenter = vec2<i32>(round(hrCoordinate));
-  let phaseOffset = hrCoordinate - round(hrCoordinate);
-  let sourceUv = (hrCoordinate + vec2<f32>(0.5)) * uniforms.inputSize.zw;
-  let spatial = spatialTwoX(hrCoordinate);
-
-  // On the exact 2x lattice the current LR frame directly constrains one of
-  // the four HR phases. The other three remain unknown until differently
-  // shifted frames provide observations for them.
+  let sourceCoordinate = vec2<f32>(id.xy) / scale;
+  let sourceSample = vec2<i32>(round(sourceCoordinate));
+  let sourcePhase = sourceCoordinate - round(sourceCoordinate);
   let exactTwoX = all(abs(scale - vec2<f32>(2.0)) < vec2<f32>(0.001));
-  let alignedSample = all(abs(phaseOffset) < vec2<f32>(0.001));
-  let hardCoverage = select(0.0, 1.0, alignedSample);
-  let softCoverage = exp(-16.0 * dot(phaseOffset, phaseOffset));
-  let currentWeight = select(softCoverage, hardCoverage, exactTwoX);
-  let currentObservation = loadInput(sourceCenter);
+  let currentObserved = exactTwoX
+    && all(abs(sourcePhase) < vec2<f32>(0.001));
 
-  // Step 2: the renderer intentionally runs one decoded frame behind. Motion
-  // maps this center frame into the already-buffered next frame, allowing its
-  // real LR samples to land on otherwise missing phases of the 2x lattice.
-  let sampledMotion = textureSampleLevel(motionMetaCurrent, linearClamp, sourceUv, 0.0);
+  // One of every four 2x pixels is an exact sample from the center frame. It
+  // is copied verbatim and can never be softened by temporal blending.
+  if (currentObserved) {
+    textureStore(
+      reconstruction,
+      vec2<i32>(id.xy),
+      vec4<f32>(loadInput(sourceSample), 1.0),
+    );
+    return;
+  }
+
+  let spatial = spatialTwoX(sourceCoordinate);
+  let sourceUv = (sourceCoordinate + vec2<f32>(0.5)) * uniforms.inputSize.zw;
+  let sampledMotion = textureSampleLevel(
+    motionMetaCurrent,
+    linearClamp,
+    sourceUv,
+    0.0,
+  );
   let motion = select(
     vec4<f32>(0.0, 0.0, 0.0, 1.0),
     sampledMotion,
     finiteVec4(sampledMotion),
   );
-  let futureHrCoordinate = hrCoordinate + motion.xy;
-  let futureCenter = vec2<i32>(round(futureHrCoordinate));
-  let futurePhaseOffset = futureHrCoordinate - round(futureHrCoordinate);
-  let futureInBounds = all(futureHrCoordinate >= vec2<f32>(-0.5))
-    && all(futureHrCoordinate <= uniforms.inputSize.xy - vec2<f32>(0.5));
-  let motionTrust = mix(0.2, 1.0, clamp(motion.z, 0.0, 1.0));
+
+  // motion.xy maps a center-frame coordinate to the next decoded frame. If
+  // that mapped coordinate lands close to an integer LR sample, the future
+  // frame contains a real observation for this otherwise-empty 2x site.
+  let futureCoordinate = sourceCoordinate + motion.xy;
+  let futureSample = vec2<i32>(round(futureCoordinate));
+  let futurePhase = futureCoordinate - round(futureCoordinate);
+  let futurePhaseCoverage = exp(-16.0 * dot(futurePhase, futurePhase));
+  let futureInBounds = all(futureSample >= vec2<i32>(0))
+    && all(futureSample < vec2<i32>(uniforms.inputSize.xy));
+  let motionConfidence = clamp(motion.z, 0.0, 1.0);
   let matchTrust = 1.0 - smoothstep(0.18, 0.72, motion.w);
-  let futureCoverage = exp(-16.0 * dot(futurePhaseOffset, futurePhaseOffset));
-  let futureWeight = futureCoverage
-    * motionTrust
-    * matchTrust
-    * select(0.0, 1.0, futureInBounds);
-  let futureObservation = loadFuture(futureCenter);
+  let futureObservation = loadFuture(futureSample);
+  let photoError = abs(luma(futureObservation) - luma(spatial));
+  let photoConsistent = photoError < 0.32;
 
-  // Approximate the previous center-frame coordinate with the inverse of the
-  // forward vector. This keeps the longer history aligned while the explicit
-  // next-frame observation supplies the new subpixel information.
-  let previousHrCoordinate = hrCoordinate - motion.xy;
-  let previousOutputCoordinate = previousHrCoordinate * scale;
-  let previousUv = (
-    previousOutputCoordinate + vec2<f32>(0.5)
-  ) * uniforms.outputSize.zw;
-  let inBounds = all(previousUv >= vec2<f32>(0.0))
-    && all(previousUv <= vec2<f32>(1.0));
-  let resetMask = select(1.0, 0.0, uniforms.flags.x > 0.5);
+  // This is deliberately a selection, not an average: an accepted decoded
+  // sample replaces the placeholder; otherwise Lanczos remains untouched.
+  let futureObserved = futureInBounds
+    && futurePhaseCoverage >= 0.35
+    && motionConfidence >= 0.08
+    && matchTrust >= 0.30
+    && photoConsistent
+    && finiteVec3(futureObservation);
+  let resolved = select(spatial, futureObservation, futureObserved);
+  let observationMask = select(0.0, 1.0, futureObserved);
 
-  let sampledHistory = textureSampleLevel(
-    historyPrevious,
-    linearClamp,
-    previousUv,
-    0.0,
-  );
-  let sampledMoments = textureSampleLevel(
-    momentsPrevious,
-    linearClamp,
-    previousUv,
-    0.0,
-  );
-  let oldHistory = select(vec4<f32>(0.0), sampledHistory, finiteVec4(sampledHistory));
-  let oldMoments = select(vec4<f32>(0.0), sampledMoments, finiteVec4(sampledMoments));
-  let oldCoverage = max(oldHistory.a, 0.0);
-  let oldMean = oldHistory.rgb / max(oldCoverage, 0.0001);
-  let photoError = abs(luma(spatial) - luma(oldMean));
-  let photoTrust = 1.0 - smoothstep(0.035, 0.14, photoError);
-  let oldScaleCandidate = uniforms.thresholds.z
-    * photoTrust
-    * motionTrust
-    * matchTrust
-    * select(0.0, 1.0, inBounds)
-    * resetMask;
-  let oldScale = select(
-    0.0,
-    clamp(oldScaleCandidate, 0.0, 1.0),
-    finiteScalar(oldScaleCandidate),
-  );
-  let oldWeight = oldCoverage * oldScale;
-
-  let accumulatedPremul = currentObservation * currentWeight
-    + futureObservation * futureWeight
-    + oldMean * oldWeight;
-  let accumulatedWeight = currentWeight + futureWeight + oldWeight;
-  let oldSecondMoment = oldMoments.rgb / max(oldCoverage, 0.0001);
-  let accumulatedSecondPremul = currentObservation * currentObservation
-      * currentWeight
-    + futureObservation * futureObservation * futureWeight
-    + oldSecondMoment * oldWeight;
-  let accumulatedSquaredWeight = currentWeight * currentWeight
-    + futureWeight * futureWeight
-    + max(oldMoments.a, 0.0) * oldScale * oldScale;
-
-  // Keep the premultiplied observation field bounded while retaining its
-  // effective sample count through sum(w^2).
-  let storedWeight = min(accumulatedWeight, 1.0);
-  let normalization = storedWeight / max(accumulatedWeight, 0.0001);
-  let storedPremul = accumulatedPremul * normalization;
-  let storedSecondPremul = accumulatedSecondPremul * normalization;
-  let storedSquaredWeight = accumulatedSquaredWeight
-    * normalization * normalization;
-  textureStore(
-    historyCurrent,
-    vec2<i32>(id.xy),
-    vec4<f32>(storedPremul, storedWeight),
-  );
-  textureStore(
-    momentsCurrent,
-    vec2<i32>(id.xy),
-    vec4<f32>(storedSecondPremul, storedSquaredWeight),
-  );
-
-  let temporalMeanCandidate = storedPremul / max(storedWeight, 0.0001);
-  let temporalMeanValid = finiteVec3(temporalMeanCandidate);
-  let temporalMean = select(spatial, temporalMeanCandidate, temporalMeanValid);
-  let secondMoment = storedSecondPremul / max(storedWeight, 0.0001);
-  let variance = max(secondMoment - temporalMean * temporalMean, vec3<f32>(0.0));
-  let varianceLuma = dot(variance, vec3<f32>(0.25, 0.5, 0.25));
-  let effectiveSamples = storedWeight * storedWeight
-    / max(storedSquaredWeight, 0.0001);
-  let coverageTrust = smoothstep(0.08, 0.72, storedWeight);
-  let sampleTrust = smoothstep(0.45, 1.15, effectiveSamples);
-  let varianceTrust = exp(-varianceLuma * 72.0);
-  let temporalTrustCandidate = coverageTrust * sampleTrust * varianceTrust;
-  let temporalTrust = select(
-    0.0,
-    clamp(temporalTrustCandidate, 0.0, 1.0),
-    finiteScalar(temporalTrustCandidate) && temporalMeanValid,
-  );
-
-  // RGB carries only the recovered observation. Alpha is the per-pixel gate;
-  // composite uses spatial Lanczos exclusively where this pixel is untrusted.
   textureStore(
     reconstruction,
     vec2<i32>(id.xy),
-    vec4<f32>(clamp(temporalMean, vec3<f32>(0.0), vec3<f32>(1.0)), temporalTrust),
+    vec4<f32>(clamp(resolved, vec3<f32>(0.0), vec3<f32>(1.0)), observationMask),
   );
 }
