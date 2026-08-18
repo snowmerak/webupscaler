@@ -3,8 +3,10 @@ import type { BaseUpscalerSettings } from '../shared/settings'
 import analyzeShader from './shaders/analyze.wgsl?raw'
 import compositeShader from './shaders/composite.wgsl?raw'
 import deblockShader from './shaders/deblock.wgsl?raw'
+import enhanceShader from './shaders/enhance.wgsl?raw'
 import motionShader from './shaders/motion.wgsl?raw'
 import reconstructShader from './shaders/reconstruct.wgsl?raw'
+import refineShader from './shaders/refine.wgsl?raw'
 
 type Pair<T> = [T, T]
 
@@ -26,10 +28,14 @@ interface GpuResources {
   motionStates: Pair<GPUTexture>
   motionMeta: Pair<GPUTexture>
   reconstruction: Pair<GPUTexture>
+  refined: Pair<GPUTexture>
+  enhanced: Pair<GPUTexture>
   deblockBindGroups: Pair<GPUBindGroup>
   analyzeBindGroups: Pair<GPUBindGroup>
   motionBindGroups: Pair<GPUBindGroup>
   reconstructBindGroups: Pair<GPUBindGroup>
+  refineBindGroups: Pair<GPUBindGroup>
+  enhanceBindGroups: Pair<GPUBindGroup>
   compositeBindGroups: Pair<GPUBindGroup>
   inputWidth: number
   inputHeight: number
@@ -72,6 +78,8 @@ export class WebGpuUpscaler {
   private analyzePipeline: GPUComputePipeline | null = null
   private motionPipeline: GPUComputePipeline | null = null
   private reconstructPipeline: GPUComputePipeline | null = null
+  private refinePipeline: GPUComputePipeline | null = null
+  private enhancePipeline: GPUComputePipeline | null = null
   private compositePipeline: GPURenderPipeline | null = null
   private resources: GpuResources | null = null
   private disposed = false
@@ -142,12 +150,16 @@ export class WebGpuUpscaler {
     const analyzeModule = this.device.createShaderModule({ label: 'Analyze shader', code: analyzeShader })
     const motionModule = this.device.createShaderModule({ label: 'Motion shader', code: motionShader })
     const reconstructModule = this.device.createShaderModule({ label: 'Temporal reconstruct shader', code: reconstructShader })
+    const refineModule = this.device.createShaderModule({ label: 'Flat-region refinement shader', code: refineShader })
+    const enhanceModule = this.device.createShaderModule({ label: 'Contrast and sharpening shader', code: enhanceShader })
     const compositeModule = this.device.createShaderModule({ label: 'Composite shader', code: compositeShader })
     await Promise.all([
       this.assertShader(deblockModule, 'Adaptive deblock'),
       this.assertShader(analyzeModule, 'Analyze'),
       this.assertShader(motionModule, 'Motion'),
       this.assertShader(reconstructModule, 'Temporal reconstruct'),
+      this.assertShader(refineModule, 'Flat-region refinement'),
+      this.assertShader(enhanceModule, 'Contrast and sharpening'),
       this.assertShader(compositeModule, 'Composite'),
     ])
 
@@ -170,6 +182,16 @@ export class WebGpuUpscaler {
       label: '2x temporal reconstruction pipeline',
       layout: 'auto',
       compute: { module: reconstructModule, entryPoint: 'main' },
+    })
+    this.refinePipeline = await this.device.createComputePipelineAsync({
+      label: 'Flat-region refinement pipeline',
+      layout: 'auto',
+      compute: { module: refineModule, entryPoint: 'main' },
+    })
+    this.enhancePipeline = await this.device.createComputePipelineAsync({
+      label: 'Local contrast and sharpening pipeline',
+      layout: 'auto',
+      compute: { module: enhanceModule, entryPoint: 'main' },
     })
     this.compositePipeline = await this.device.createRenderPipelineAsync({
       label: 'Composite pipeline',
@@ -270,6 +292,18 @@ export class WebGpuUpscaler {
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     }))
+    const refined = this.pair((index) => device.createTexture({
+      label: `Flat-region refined lattice ${index}`,
+      size: [target.width, target.height],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
+    const enhanced = this.pair((index) => device.createTexture({
+      label: `Contrast and sharpened lattice ${index}`,
+      size: [target.width, target.height],
+      format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    }))
     const preprocessed = this.pair((index) => device.createTexture({
       label: `Deblocked video frame ${index}`,
       size: [video.videoWidth, video.videoHeight],
@@ -282,6 +316,8 @@ export class WebGpuUpscaler {
     const analyzePipeline = this.requireAnalyzePipeline()
     const motionPipeline = this.requireMotionPipeline()
     const reconstructPipeline = this.requireReconstructPipeline()
+    const refinePipeline = this.requireRefinePipeline()
+    const enhancePipeline = this.requireEnhancePipeline()
     const compositePipeline = this.requireCompositePipeline()
     const deblockBindGroups = this.pair((current) => device.createBindGroup({
       label: `Adaptive deblock bind group ${current}`,
@@ -336,11 +372,29 @@ export class WebGpuUpscaler {
         ],
       })
     })
+    const refineBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Flat-region refinement bind group ${current}`,
+      layout: refinePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: reconstruction[current].createView() },
+        { binding: 1, resource: refined[current].createView() },
+        { binding: 2, resource: { buffer: uniformBuffer } },
+      ],
+    }))
+    const enhanceBindGroups = this.pair((current) => device.createBindGroup({
+      label: `Contrast and sharpening bind group ${current}`,
+      layout: enhancePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: refined[current].createView() },
+        { binding: 1, resource: enhanced[current].createView() },
+        { binding: 2, resource: { buffer: uniformBuffer } },
+      ],
+    }))
     const compositeBindGroups = this.pair((current) => device.createBindGroup({
       label: `Composite bind group ${current}`,
       layout: compositePipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: reconstruction[current].createView() },
+        { binding: 0, resource: enhanced[current].createView() },
         { binding: 1, resource: { buffer: uniformBuffer } },
       ],
     }))
@@ -352,10 +406,14 @@ export class WebGpuUpscaler {
       motionStates,
       motionMeta,
       reconstruction,
+      refined,
+      enhanced,
       deblockBindGroups,
       analyzeBindGroups,
       motionBindGroups,
       reconstructBindGroups,
+      refineBindGroups,
+      enhanceBindGroups,
       compositeBindGroups,
       inputWidth: video.videoWidth,
       inputHeight: video.videoHeight,
@@ -548,6 +606,18 @@ export class WebGpuUpscaler {
     reconstructPass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
     reconstructPass.end()
 
+    const refinePass = encoder.beginComputePass({ label: 'Flat-region cleanup and dering pass' })
+    refinePass.setPipeline(this.requireRefinePipeline())
+    refinePass.setBindGroup(0, resources.refineBindGroups[center])
+    refinePass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
+    refinePass.end()
+
+    const enhancePass = encoder.beginComputePass({ label: 'Local contrast, text clarity, and sharpening pass' })
+    enhancePass.setPipeline(this.requireEnhancePipeline())
+    enhancePass.setBindGroup(0, resources.enhanceBindGroups[center])
+    enhancePass.dispatchWorkgroups(Math.ceil(target.width / 8), Math.ceil(target.height / 8))
+    enhancePass.end()
+
     const compositePass = encoder.beginRenderPass({
       label: 'Lanczos presentation resize pass',
       colorAttachments: [{
@@ -637,6 +707,16 @@ export class WebGpuUpscaler {
     return this.reconstructPipeline
   }
 
+  private requireRefinePipeline() {
+    if (!this.refinePipeline) throw new WebGpuUnavailableError('Refinement pipeline이 초기화되지 않았습니다.')
+    return this.refinePipeline
+  }
+
+  private requireEnhancePipeline() {
+    if (!this.enhancePipeline) throw new WebGpuUnavailableError('Enhancement pipeline이 초기화되지 않았습니다.')
+    return this.enhancePipeline
+  }
+
   private requireCompositePipeline() {
     if (!this.compositePipeline) throw new WebGpuUnavailableError('Composite pipeline이 초기화되지 않았습니다.')
     return this.compositePipeline
@@ -649,6 +729,8 @@ export class WebGpuUpscaler {
     for (const texture of this.resources?.motionStates ?? []) texture.destroy()
     for (const texture of this.resources?.motionMeta ?? []) texture.destroy()
     for (const texture of this.resources?.reconstruction ?? []) texture.destroy()
+    for (const texture of this.resources?.refined ?? []) texture.destroy()
+    for (const texture of this.resources?.enhanced ?? []) texture.destroy()
     this.resources = null
   }
 

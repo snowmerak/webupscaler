@@ -7,6 +7,8 @@ const shaders = [
   { file: 'analyze.wgsl', compute: ['main'], bindings: 4 },
   { file: 'motion.wgsl', compute: ['main'], bindings: 10 },
   { file: 'reconstruct.wgsl', compute: ['main'], bindings: 6 },
+  { file: 'refine.wgsl', compute: ['main'], bindings: 3 },
+  { file: 'enhance.wgsl', compute: ['main'], bindings: 3 },
   { file: 'composite.wgsl', vertex: ['vertexMain'], fragment: ['fragmentMain'], bindings: 2 },
 ]
 

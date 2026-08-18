@@ -1,0 +1,96 @@
+struct FrameUniforms {
+  inputSize: vec4<f32>,
+  outputSize: vec4<f32>,
+  analysisSize: vec4<f32>,
+  motionSize: vec4<f32>,
+  timeScale: vec4<f32>,
+  thresholds: vec4<f32>,
+  flags: vec4<f32>,
+}
+
+@group(0) @binding(0) var reconstruction: texture_2d<f32>;
+@group(0) @binding(1) var refinedFrame: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var<uniform> uniforms: FrameUniforms;
+
+const OFFSETS = array<vec2<i32>, 8>(
+  vec2<i32>(-1, -1), vec2<i32>(0, -1), vec2<i32>(1, -1),
+  vec2<i32>(-1, 0),                         vec2<i32>(1, 0),
+  vec2<i32>(-1, 1),  vec2<i32>(0, 1),  vec2<i32>(1, 1),
+);
+
+const SPATIAL_WEIGHTS = array<f32, 8>(
+  1.0, 2.0, 1.0,
+  2.0,      2.0,
+  1.0, 2.0, 1.0,
+);
+
+fn luma(color: vec3<f32>) -> f32 {
+  return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+fn loadFrame(position: vec2<i32>) -> vec3<f32> {
+  let maximum = vec2<i32>(uniforms.outputSize.xy) - vec2<i32>(1);
+  return textureLoad(
+    reconstruction,
+    clamp(position, vec2<i32>(0), maximum),
+    0,
+  ).rgb;
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+  let dimensions = textureDimensions(refinedFrame);
+  if (any(id.xy >= dimensions)) {
+    return;
+  }
+
+  let position = vec2<i32>(id.xy);
+  let center = loadFrame(position);
+  let centerLuma = luma(center);
+  var filtered = center * 4.0;
+  var weightSum = 4.0;
+  var minimum = center;
+  var maximum = center;
+  var minimumLuma = centerLuma;
+  var maximumLuma = centerLuma;
+
+  for (var index = 0u; index < 8u; index += 1u) {
+    let sample = loadFrame(position + OFFSETS[index]);
+    let sampleLuma = luma(sample);
+    let rangeWeight = exp(-abs(sampleLuma - centerLuma) * 28.0);
+    let weight = SPATIAL_WEIGHTS[index] * rangeWeight;
+    filtered += sample * weight;
+    weightSum += weight;
+    minimum = min(minimum, sample);
+    maximum = max(maximum, sample);
+    minimumLuma = min(minimumLuma, sampleLuma);
+    maximumLuma = max(maximumLuma, sampleLuma);
+  }
+
+  filtered /= max(weightSum, 0.0001);
+  let localRange = maximumLuma - minimumLuma;
+  let residual = abs(centerLuma - luma(filtered));
+  let flatMask = 1.0 - smoothstep(0.022, 0.105, localRange);
+  let noiseEvidence = smoothstep(0.0015, 0.022, residual);
+  let ringEvidence = smoothstep(0.010, 0.060, residual)
+    * (1.0 - smoothstep(0.085, 0.180, localRange));
+  let modeScale = select(
+    1.15,
+    select(0.88, 0.62, uniforms.flags.y > 1.5),
+    uniforms.flags.y > 0.5,
+  );
+  let smoothing = clamp(
+    (0.52 * flatMask + 0.48 * noiseEvidence + 0.35 * ringEvidence) * modeScale,
+    0.0,
+    0.85,
+  );
+  let candidate = mix(center, filtered, smoothing);
+  let allowance = (maximum - minimum) * 0.025 + vec3<f32>(0.0005);
+  let resolved = clamp(candidate, minimum - allowance, maximum + allowance);
+
+  textureStore(
+    refinedFrame,
+    position,
+    vec4<f32>(clamp(resolved, vec3<f32>(0.0), vec3<f32>(1.0)), smoothing),
+  );
+}
