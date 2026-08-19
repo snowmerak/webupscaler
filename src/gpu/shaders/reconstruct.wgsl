@@ -155,6 +155,67 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     finiteVec4(sampledMotion),
   );
 
+  // A single 16x16 block match is not enough near silhouettes.  Compare it
+  // with the four adjacent motion cells and collapse temporal weight where
+  // the field is discontinuous.  Smooth camera motion survives, while
+  // foreground/background boundaries no longer borrow from each other.
+  let motionTexel = 1.0 / vec2<f32>(textureDimensions(motionMetaCurrent));
+  let sampledMotionLeft = textureSampleLevel(
+    motionMetaCurrent,
+    linearClamp,
+    sourceUv - vec2<f32>(motionTexel.x, 0.0),
+    0.0,
+  );
+  let sampledMotionRight = textureSampleLevel(
+    motionMetaCurrent,
+    linearClamp,
+    sourceUv + vec2<f32>(motionTexel.x, 0.0),
+    0.0,
+  );
+  let sampledMotionUp = textureSampleLevel(
+    motionMetaCurrent,
+    linearClamp,
+    sourceUv - vec2<f32>(0.0, motionTexel.y),
+    0.0,
+  );
+  let sampledMotionDown = textureSampleLevel(
+    motionMetaCurrent,
+    linearClamp,
+    sourceUv + vec2<f32>(0.0, motionTexel.y),
+    0.0,
+  );
+  let motionNeighborsValid = finiteVec4(sampledMotionLeft)
+    && finiteVec4(sampledMotionRight)
+    && finiteVec4(sampledMotionUp)
+    && finiteVec4(sampledMotionDown);
+  let motionSpread = max(
+    max(
+      length(sampledMotionLeft.xy - motion.xy),
+      length(sampledMotionRight.xy - motion.xy),
+    ),
+    max(
+      length(sampledMotionUp.xy - motion.xy),
+      length(sampledMotionDown.xy - motion.xy),
+    ),
+  );
+  let motionCoherence = select(
+    0.0,
+    1.0 - smoothstep(0.22, 1.35, motionSpread),
+    motionNeighborsValid,
+  );
+  let neighborConfidence = select(
+    0.0,
+    clamp(
+      min(
+        min(sampledMotionLeft.z, sampledMotionRight.z),
+        min(sampledMotionUp.z, sampledMotionDown.z),
+      ),
+      0.0,
+      1.0,
+    ),
+    motionNeighborsValid,
+  );
+
   // motion.xy maps center-frame coordinates into the next decoded frame. The
   // future Lanczos footprint is therefore sampled around x + motion instead
   // of selecting only the rare position that lands exactly on an LR pixel.
@@ -163,6 +224,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let futureFiltered = future.premultiplied / max(future.weight, 0.0001);
   let futurePhase = futureCoordinate - round(futureCoordinate);
   let futurePhaseCoverage = exp(-12.0 * dot(futurePhase, futurePhase));
+  let currentPhaseCoverage = exp(-12.0 * dot(sourcePhase, sourcePhase));
+  // Temporal data is promoted only when motion maps this missing 2x lattice
+  // site substantially closer to a real decoded sample than the center frame
+  // can.  This is the actual sub-pixel super-resolution signal; equal-phase
+  // frames contribute almost nothing and therefore cannot create a soft echo.
+  let phaseAdvantage = max(0.0, futurePhaseCoverage - currentPhaseCoverage);
+  let phaseEvidence = smoothstep(0.12, 0.78, phaseAdvantage)
+    * smoothstep(0.18, 0.88, futurePhaseCoverage);
   let futureInBounds = all(futureCoordinate >= vec2<f32>(-0.5))
     && all(futureCoordinate <= uniforms.inputSize.xy - vec2<f32>(0.5));
   let motionConfidence = clamp(motion.z, 0.0, 1.0);
@@ -171,7 +240,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
   let photoTrust = 1.0 - smoothstep(0.055, 0.22, photoError);
   let colorError = length(futureFiltered - spatial) * 0.57735026919;
   let colorTrust = 1.0 - smoothstep(0.045, 0.18, colorError);
-  let phaseGain = mix(0.12, 1.0, futurePhaseCoverage);
+  let phaseGain = mix(0.035, 1.35, phaseEvidence);
   let localRange = max(0.0, luma(current.maximum) - luma(current.minimum));
   let motionMagnitude = length(motion.xy);
   // Temporal evidence is useful for broad, nearly static surfaces, but even a
@@ -183,9 +252,9 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     * (1.0 - smoothstep(0.105, 0.205, localRange));
   let edgeTrust = 1.0 - smoothstep(0.090, 0.205, localRange);
   let stillTrust = 1.0 - smoothstep(0.30, 1.80, motionMagnitude);
-  let regionBudget = (0.055 + 0.425 * flatTrust + 0.135 * textureBand)
+  let regionBudget = (0.060 + 0.560 * flatTrust + 0.240 * textureBand)
     * edgeTrust
-    * mix(0.32, 1.0, stillTrust);
+    * mix(0.42, 1.0, stillTrust);
   let temporalValid = futureInBounds
     && finiteVec3(spatial)
     && finiteVec3(futureFiltered);
@@ -194,12 +263,14 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     clamp(
       regionBudget
         * motionConfidence
+        * mix(motionConfidence, neighborConfidence, 0.45)
+        * motionCoherence
         * matchTrust
         * photoTrust
         * colorTrust
         * phaseGain,
       0.0,
-      0.50,
+      1.15,
     ),
     temporalValid,
   );
